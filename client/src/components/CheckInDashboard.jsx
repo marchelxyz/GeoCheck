@@ -128,4 +128,34 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                       <p>
                         🕐 {new Date(checkIn.timestamp).toLocaleString('ru-RU')}
                       </p>
-                    </div
+                    </div>
+                    
+                    {checkIn.photoFileId && (
+                      <div className="mt-3">
+                        <a
+                          href={getPhotoUrl(checkIn.photoFileId)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block"
+                        >
+                          <img
+                            src={getPhotoUrl(checkIn.photoFileId)}
+                            alt="Check-in photo"
+                            className="h-24 w-24 object-cover rounded border border-gray-300"
+                            onError={(e) => {
+                              e.target.style.display = 'none';
+                            }}
+                          />
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
