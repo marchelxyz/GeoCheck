@@ -128,4 +128,4 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                       <p>
                         🕐 {new Date(checkIn.timestamp).toLocaleString('ru-RU')}
                       </p>
-                    </div
+                    </div>
