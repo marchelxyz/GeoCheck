@@ -1,0 +1,298 @@
+import express from 'express';
+import { Telegraf, Markup } from 'telegraf';
+import cron from 'node-cron';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { PrismaClient } from '@prisma/client';
+import crypto from 'crypto';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config();
+
+const app = express();
+const prisma = new PrismaClient();
+
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const PORT = process.env.PORT || 3000;
+
+if (!BOT_TOKEN) {
+  console.error('BOT_TOKEN is required!');
+  process.exit(1);
+}
+
+const bot = new Telegraf(BOT_TOKEN);
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static(join(__dirname, '../client/dist')));
+
+// Verify Telegram Web App data
+function verifyTelegramWebAppData(initData) {
+  try {
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get('hash');
+    urlParams.delete('hash');
+    
+    const dataCheckString = Array.from(urlParams.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+    
+    const secretKey = crypto
+      .createHmac('sha256', 'WebAppData')
+      .update(BOT_TOKEN)
+      .digest();
+    
+    const calculatedHash = crypto
+      .createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex');
+    
+    return calculatedHash === hash;
+  } catch (error) {
+    console.error('Error verifying Telegram data:', error);
+    return false;
+  }
+}
+
+// Parse Telegram Web App init data
+function parseInitData(initData) {
+  const urlParams = new URLSearchParams(initData);
+  const userStr = urlParams.get('user');
+  if (!userStr) return null;
+  return JSON.parse(userStr);
+}
+
+// Middleware to verify Telegram Web App
+function verifyTelegramWebApp(req, res, next) {
+  const initData = req.headers['x-telegram-init-data'];
+  if (!initData) {
+    return res.status(401).json({ error: 'Missing Telegram init data' });
+  }
+  
+  if (!verifyTelegramWebAppData(initData)) {
+    return res.status(401).json({ error: 'Invalid Telegram init data' });
+  }
+  
+  const user = parseInitData(initData);
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid user data' });
+  }
+  
+  req.telegramUser = user;
+  next();
+}
+
+// Haversine distance calculation
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371000; // Earth radius in meters
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Check if location is within any zone
+async function checkLocationInZones(lat, lon) {
+  const zones = await prisma.zone.findMany();
+  
+  for (const zone of zones) {
+    const distance = calculateDistance(lat, lon, zone.latitude, zone.longitude);
+    if (distance <= zone.radius) {
+      return { isWithinZone: true, distanceToZone: distance, zoneId: zone.id };
+    }
+  }
+  
+  // Find closest zone
+  const distances = zones.map(zone => ({
+    zone,
+    distance: calculateDistance(lat, lon, zone.latitude, zone.longitude)
+  }));
+  
+  const closest = distances.reduce((min, current) => 
+    current.distance < min.distance ? current : min
+  , distances[0] || { distance: Infinity });
+  
+  return { 
+    isWithinZone: false, 
+    distanceToZone: closest.distance || null,
+    zoneId: null
+  };
+}
+
+// API Routes
+
+// Get or create user
+app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id, first_name, last_name, username } = req.telegramUser;
+    const name = `${first_name || ''} ${last_name || ''}`.trim() || username || `User ${id}`;
+    
+    let user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+    
+    if (!user) {
+      // First user becomes director
+      const userCount = await prisma.user.count();
+      user = await prisma.user.create({
+        data: {
+          telegramId: String(id),
+          name,
+          role: userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE'
+        }
+      });
+    } else {
+      user = await prisma.user.update({
+        where: { telegramId: String(id) },
+        data: { name }
+      });
+    }
+    
+    res.json(user);
+  } catch (error) {
+    console.error('Error in /api/user:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get user role
+app.get('/api/user/role', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) },
+      select: { role: true }
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({ role: user.role });
+  } catch (error) {
+    console.error('Error in /api/user/role:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin command to claim director role
+app.post('/api/admin/claim', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { password } = req.body;
+    const { id } = req.telegramUser;
+    
+    if (password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+    
+    const user = await prisma.user.update({
+      where: { telegramId: String(id) },
+      data: { role: 'DIRECTOR' }
+    });
+    
+    res.json(user);
+  } catch (error) {
+    console.error('Error in /api/admin/claim:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Zones CRUD
+app.get('/api/zones', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+    
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const zones = await prisma.zone.findMany({
+      include: {
+        createdByUser: {
+          select: { name: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    res.json(zones);
+  } catch (error) {
+    console.error('Error in /api/zones:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { name, latitude, longitude, radius } = req.body;
+    
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+    
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    if (!name || latitude === undefined || longitude === undefined || !radius) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    const zone = await prisma.zone.create({
+      data: {
+        name,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        radius: parseFloat(radius),
+        createdBy: user.id
+      }
+    });
+    
+    res.json(zone);
+  } catch (error) {
+    console.error('Error in /api/zones POST:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/zones/:id', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: userId } = req.telegramUser;
+    const { id: zoneId } = req.params;
+    
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(userId) }
+    });
+    
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    await prisma.zone.delete({
+      where: { id: zoneId }
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error in /api/zones DELETE:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get check-in results (Director dashboard)
+app.get('/api/c
