@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String           @id @default(cuid())
+  telegramId    String           @unique
+  name          String?
+  role          UserRole         @default(EMPLOYEE)
+  createdAt     DateTime         @default(now())
+  
+  zones         Zone[]
+  checkInRequests CheckInRequest[]
+  
+  @@map("users")
+}
+
+model Zone {
+  id          String   @id @default(cuid())
+  name        String
+  latitude    Float
+  longitude   Float
+  radius      Float
+  createdBy   String
+  createdAt   DateTime @default(now())
+  
+  createdByUser User   @relation(fields: [createdBy], references: [id])
+  
+  @@map("zones")
+}
+
+model CheckInRequest {
+  id          String            @id @default(cuid())
+  userId      String
+  requestedAt DateTime         @default(now())
+  status      CheckInStatus     @default(PENDING)
+  
+  user        User              @relation(fields: [userId], references: [id])
+  result      CheckInResult?
+  
+  @@map("check_in_requests")
+}
+
+model CheckInResult {
+  id            String   @id @default(cuid())
+  requestId     String   @unique
+  locationLat   Float
+  locationLon   Float
+  photoFileId   String?
+  isWithinZone  Boolean
+  distanceToZone Float?
+  timestamp     DateTime @default(now())
+  
+  request       CheckInRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  
+  @@map("check_in_results")
+}
+
+enum UserRole {
+  DIRECTOR
+  EMPLOYEE
+}
+
+enum CheckInStatus {
+  PENDING
+  COMPLETED
+  MISSED
+}
