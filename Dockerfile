@@ -16,9 +16,10 @@ RUN npx prisma generate
 FROM node:20-alpine
 WORKDIR /app
 COPY server/package*.json ./server/
-RUN cd server && npm install --only=production
+RUN cd server && npm install
 COPY prisma ./prisma
-RUN npx prisma generate
+RUN cd server && npx prisma generate
+RUN cd server && npm prune --production
 COPY server ./server
 COPY --from=client-builder /app/client/dist ./client/dist
 WORKDIR /app/server
