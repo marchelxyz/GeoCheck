@@ -9,16 +9,16 @@ FROM node:20-alpine AS server-builder
 WORKDIR /app/server
 COPY server/package*.json ./
 RUN npm install
-COPY prisma ./prisma
+COPY prisma ../prisma
 COPY server/ ./
-RUN npx prisma generate
+RUN npx prisma generate --schema=../prisma/schema.prisma
 
 FROM node:20-alpine
 WORKDIR /app
 COPY server/package*.json ./server/
 RUN cd server && npm install
 COPY prisma ./prisma
-RUN cd server && npx prisma generate
+RUN cd server && npx prisma generate --schema=../prisma/schema.prisma
 RUN cd server && npm prune --production
 COPY server ./server
 COPY --from=client-builder /app/client/dist ./client/dist
