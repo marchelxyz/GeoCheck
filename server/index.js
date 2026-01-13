@@ -139,7 +139,8 @@ function verifyTelegramWebAppData(initData) {
     const dataCheckString = Array.from(urlParams.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => `${key}=${value}`)
-      .join('\\n');
+      .join('\
+');
     
     const secretKey = crypto
       .createHmac('sha256', 'WebAppData')
@@ -545,7 +546,9 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     try {
       await bot.telegram.sendMessage(
         employee.telegramId,
-        '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
+        '📍 Проверка местоположения!\
+\
+Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
       );
     } catch (error) {
       console.error('Error sending check-in notification:', error);
@@ -575,8 +578,11 @@ bot.start(async (ctx) => {
   
   if (!user) {
     await ctx.reply(
-      '👋 Привет!\n\n' +
-      'Для использования бота необходимо зарегистрироваться через веб-приложение.\n' +
+      '👋 Привет!
+
+' +
+      'Для использования бота необходимо зарегистрироваться через веб-приложение.
+' +
       'Нажмите кнопку ниже, чтобы открыть приложение и зарегистрироваться.'
     );
     const keyboard = Markup.keyboard([
@@ -586,13 +592,16 @@ bot.start(async (ctx) => {
     return;
   }
   
-  const keyboard = Markup.keyboard([  const keyboard = Markup.keyboard([
+  const keyboard = Markup.keyboard([
     [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
   ]).resize();
   
   await ctx.reply(
-    `Привет, ${user.name}! 👋\\n\\n` +
-    `Это бот для отслеживания геолокации сотрудников.\\n` +
+    `Привет, ${user.name}! 👋\
+\
+` +
+    `Это бот для отслеживания геолокации сотрудников.\
+` +
     `Нажмите кнопку ниже, чтобы открыть приложение.`,
     keyboard
   );
@@ -662,7 +671,8 @@ bot.on('location', async (ctx) => {
   });
   
   const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
-  await ctx.reply(`${status}\\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
+  await ctx.reply(`${status}\
+Расстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
 });
 
 // Handle photo
@@ -753,7 +763,9 @@ cron.schedule('*/30 * * * *', async () => {
   try {
     await bot.telegram.sendMessage(
       randomEmployee.telegramId,
-      '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
+      '📍 Проверка местоположения!\
+\
+Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
     );
   } catch (error) {
     console.error('Error sending check-in notification:', error);
