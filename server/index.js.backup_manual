@@ -229,37 +229,7 @@ async function checkLocationInZones(lat, lon) {
 
 // API Routes
 
-// Register employee (only through web app)
-app.post('/api/user/register', verifyTelegramWebApp, async (req, res) => {
-  try {
-    const { id, first_name, last_name, username } = req.telegramUser;
-    const name = `${first_name || ''} ${last_name || ''}`.trim() || username || `User ${id}`;
-    
-    let user = await prisma.user.findUnique({
-      where: { telegramId: String(id) }
-    });
-    
-    if (user) {
-      return res.status(400).json({ error: 'User already registered' });
-    }
-    
-    const userCount = await prisma.user.count();
-    user = await prisma.user.create({
-      data: {
-        telegramId: String(id),
-        name,
-        role: userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE'
-      }
-    });
-    
-    res.json(user);
-  } catch (error) {
-    console.error('Error in /api/user/register:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get or update user (for existing users)
+// Get or create user
 app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id, first_name, last_name, username } = req.telegramUser;
@@ -270,13 +240,21 @@ app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
     });
     
     if (!user) {
-      return res.status(404).json({ error: 'User not registered. Please register first.' });
+      // First user becomes director
+      const userCount = await prisma.user.count();
+      user = await prisma.user.create({
+        data: {
+          telegramId: String(id),
+          name,
+          role: userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE'
+        }
+      });
+    } else {
+      user = await prisma.user.update({
+        where: { telegramId: String(id) },
+        data: { name }
+      });
     }
-    
-    user = await prisma.user.update({
-      where: { telegramId: String(id) },
-      data: { name }
-    });
     
     res.json(user);
   } catch (error) {
@@ -301,37 +279,6 @@ app.get('/api/user/role', verifyTelegramWebApp, async (req, res) => {
     res.json({ role: user.role });
   } catch (error) {
     console.error('Error in /api/user/role:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
-// Get list of employees (Director only)
-app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
-  try {
-    const { id } = req.telegramUser;
-    const user = await prisma.user.findUnique({
-      where: { telegramId: String(id) }
-    });
-    
-    if (!user || user.role !== 'DIRECTOR') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    
-    const employees = await prisma.user.findMany({
-      where: { role: 'EMPLOYEE' },
-      select: {
-        id: true,
-        telegramId: true,
-        name: true,
-        createdAt: true
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-    
-    res.json(employees);
-  } catch (error) {
-    console.error('Error in /api/employees:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -399,17 +346,7 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
     
-
-    // Check if there are any employees registered
-    const employeeCount = await prisma.user.count({
-      where: { role: 'EMPLOYEE' }
-    });
-    
-    if (employeeCount === 0) {
-      return res.status(400).json({ error: 'Cannot create zones. No employees registered yet.' });
-    }
-    
-        if (!name || latitude === undefined || longitude === undefined || !radius) {
+    if (!name || latitude === undefined || longitude === undefined || !radius) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     
@@ -497,69 +434,6 @@ app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
   }
 });
 
-
-// Request check-in for specific employee (Director only)
-app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
-  try {
-    const { id } = req.telegramUser;
-    const { employeeId } = req.body;
-    
-    const director = await prisma.user.findUnique({
-      where: { telegramId: String(id) }
-    });
-    
-    if (!director || director.role !== 'DIRECTOR') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    
-    if (!employeeId) {
-      return res.status(400).json({ error: 'Employee ID is required' });
-    }
-    
-    const employee = await prisma.user.findUnique({
-      where: { id: employeeId }
-    });
-    
-    if (!employee || employee.role !== 'EMPLOYEE') {
-      return res.status(404).json({ error: 'Employee not found' });
-    }
-    
-    const pendingRequest = await prisma.checkInRequest.findFirst({
-      where: {
-        userId: employee.id,
-        status: 'PENDING'
-      }
-    });
-    
-    if (pendingRequest) {
-      return res.status(400).json({ error: 'Employee already has a pending check-in request' });
-    }
-    
-    const checkInRequest = await prisma.checkInRequest.create({
-      data: {
-        userId: employee.id,
-        status: 'PENDING'
-      }
-    });
-    
-    try {
-      await bot.telegram.sendMessage(
-        employee.telegramId,
-        '📍 Проверка местоположения!
-
-Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
-      );
-    } catch (error) {
-      console.error('Error sending check-in notification:', error);
-    }
-    
-    res.json(checkInRequest);
-  } catch (error) {
-    console.error('Error in /api/check-ins/request:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -571,27 +445,23 @@ const WEB_APP_URL = process.env.WEB_APP_URL || `http://localhost:${PORT}`;
 bot.start(async (ctx) => {
   const userId = String(ctx.from.id);
   
-  const user = await prisma.user.findUnique({
+  // Get or create user
+  let user = await prisma.user.findUnique({
     where: { telegramId: userId }
   });
   
   if (!user) {
-    await ctx.reply(
-      '👋 Привет!
-
-' +
-      'Для использования бота необходимо зарегистрироваться через веб-приложение.
-' +
-      'Нажмите кнопку ниже, чтобы открыть приложение и зарегистрироваться.'
-    );
-    const keyboard = Markup.keyboard([
-      [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
-    ]).resize();
-    await ctx.reply('Откройте приложение для регистрации:', keyboard);
-    return;
+    const userCount = await prisma.user.count();
+    user = await prisma.user.create({
+      data: {
+        telegramId: userId,
+        name: `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || ctx.from.username || `User ${userId}`,
+        role: userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE'
+      }
+    });
   }
   
-  const keyboard = Markup.keyboard([  const keyboard = Markup.keyboard([
+  const keyboard = Markup.keyboard([
     [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
   ]).resize();
   
