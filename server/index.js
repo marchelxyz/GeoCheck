@@ -16,6 +16,40 @@ dotenv.config();
 const app = express();
 const prisma = new PrismaClient();
 
+
+// Run database migrations
+async function runMigrations() {
+  try {
+    const { spawn } = await import('child_process');
+    return new Promise((resolve) => {
+      console.log("🔄 Applying database schema...");
+      const process = spawn('npx', ['prisma', 'db', 'push', '--schema=../prisma/schema.prisma', '--accept-data-loss'], {
+        stdio: 'inherit',
+        cwd: '/app/server',
+        shell: true
+      });
+      
+      process.on('close', (code) => {
+        if (code === 0) {
+          console.log("✅ Database schema applied successfully");
+          resolve(true);
+        } else {
+          console.error(`❌ Schema application process exited with code ${code}`);
+          resolve(false);
+        }
+      });
+      
+      process.on('error', (error) => {
+        console.error("❌ Error applying schema:", error.message);
+        resolve(false);
+      });
+    });
+  } catch (error) {
+    console.error("❌ Error importing child_process:", error.message);
+    return false;
+  }
+}
+
 // Database connection retry function
 async function connectToDatabase(maxRetries = 30, delay = 3000) {
   for (let i = 0; i < maxRetries; i++) {
@@ -582,6 +616,13 @@ app.listen(PORT, () => {
 
 // Start bot with database connection check
 async function startBot() {
+  console.log("🔄 Running database migrations...");
+  const migrationsOk = await runMigrations();
+  if (!migrationsOk) {
+    console.error("❌ Failed to run database migrations");
+    process.exit(1);
+  }
+  
   console.log("🔄 Connecting to database...");
   const connected = await connectToDatabase();
   
