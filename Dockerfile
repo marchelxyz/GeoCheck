@@ -6,7 +6,7 @@ COPY client/ ./
 RUN npm run build
 
 FROM node:20-alpine AS server-builder
-RUN apk add --no-cache openssl1.1-compat
+RUN apk add --no-cache openssl libc6-compat
 WORKDIR /app/server
 COPY server/package*.json ./
 RUN npm install
@@ -15,7 +15,7 @@ COPY server/ ./
 RUN npx prisma generate --schema=../prisma/schema.prisma
 
 FROM node:20-alpine
-RUN apk add --no-cache openssl1.1-compat
+RUN apk add --no-cache openssl libc6-compat
 WORKDIR /app
 COPY server/package*.json ./server/
 RUN cd server && npm install
