@@ -13,11 +13,22 @@ const __dirname = dirname(__filename);
 
 dotenv.config();
 
+// Log environment variables (without sensitive data)
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error("❌ DATABASE_URL environment variable is not set!");
+  console.error("Please make sure PostgreSQL service is connected in Railway.");
+} else {
+  // Mask password in DATABASE_URL for logging
+  const maskedUrl = DATABASE_URL.replace(/:([^:@]+)@/, ":***@");
+  console.log("📊 DATABASE_URL:", maskedUrl);
+}
+
 const app = express();
 const prisma = new PrismaClient();
 
 // Database connection retry function
-async function connectToDatabase(maxRetries = 10, delay = 2000) {
+async function connectToDatabase(maxRetries = 30, delay = 3000) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       await prisma.$connect();
