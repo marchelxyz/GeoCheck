@@ -549,9 +549,8 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
 
 Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
 
-Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
 
-Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
+
       );
     } catch (error) {
       console.error('Error sending check-in notification:', error);
