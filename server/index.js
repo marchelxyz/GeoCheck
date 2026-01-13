@@ -665,13 +665,8 @@ async function startBot() {
     process.exit(1);
   }
   
-  console.log("🔄 Connecting to database...");
-  const connected = await connectToDatabase();
-  
-  if (!connected) {
-    console.error("❌ Failed to connect to database after multiple retries");
-    process.exit(1);
-  }
+  // runMigrations() already checks database connection and applies schema
+  // No need for additional connectToDatabase() call
   
   try {
     await bot.launch();
