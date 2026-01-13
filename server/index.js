@@ -19,22 +19,39 @@ const prisma = new PrismaClient();
 
 // Run database migrations
 // Run database migrations using prisma db push
+// Run database migrations using prisma db push
 async function runMigrations(maxRetries = 10, delay = 3000) {
-  // Сначала проверяем подключение к БД с retry логикой
+  // Сначала проверяем подключение к БД с retry логикой (как в mariko_vld)
   console.log("🔄 Checking database connection before applying schema...");
   let dbConnected = false;
+  const maxConnectionAttempts = 10;
   
-  for (let i = 0; i < maxRetries; i++) {
+  for (let attempt = 1; attempt <= maxConnectionAttempts; attempt++) {
     try {
-      await prisma.$connect();
+      // Используем prisma.$queryRaw для проверки подключения (аналог SELECT 1 из mariko_vld)
+      await prisma.$queryRaw`SELECT 1`;
       dbConnected = true;
       console.log("✅ Database connection established");
       break;
     } catch (error) {
-      console.error(`❌ Database connection attempt ${i + 1}/${maxRetries} failed:`, error.message);
-      if (i < maxRetries - 1) {
-        console.log(`⏳ Retrying connection in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+      const isLastAttempt = attempt === maxConnectionAttempts;
+      const errorInfo = {
+        code: error.code || "UNKNOWN",
+        message: error.message,
+      };
+      
+      if (isLastAttempt) {
+        console.error("❌ Ошибка подключения к БД после всех попыток:");
+        console.error("Код ошибки:", errorInfo.code);
+        console.error("Сообщение:", errorInfo.message);
+        console.error("Полная ошибка:", error);
+        return false;
+      } else {
+        // Экспоненциальная задержка как в mariko_vld: 2, 4, 6 секунд...
+        const waitTime = attempt * 2000;
+        console.warn(`⚠️  Попытка ${attempt} не удалась. Повтор через ${waitTime}мс...`);
+        console.warn("Ошибка:", errorInfo.message);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
   }
