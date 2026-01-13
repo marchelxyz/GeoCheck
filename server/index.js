@@ -18,53 +18,78 @@ const prisma = new PrismaClient();
 
 
 // Run database migrations
-async function runMigrations() {
-  try {
-    const { spawn } = await import('child_process');
-    return new Promise((resolve) => {
-      console.log("🔄 Applying database schema...");
-      const process = spawn('npx', ['prisma', 'db', 'push', '--schema=../prisma/schema.prisma', '--accept-data-loss'], {
-        stdio: 'inherit',
-        cwd: '/app/server',
-        shell: true
-      });
-      
-      process.on('close', (code) => {
-        if (code === 0) {
-          console.log("✅ Database schema applied successfully");
-          resolve(true);
-        } else {
-          console.error(`❌ Schema application process exited with code ${code}`);
-          resolve(false);
-        }
-      });
-      
-      process.on('error', (error) => {
-        console.error("❌ Error applying schema:", error.message);
-        resolve(false);
-      });
-    });
-  } catch (error) {
-    console.error("❌ Error importing child_process:", error.message);
-    return false;
-  }
-}
-
-// Database connection retry function
-async function connectToDatabase(maxRetries = 30, delay = 3000) {
+// Run database migrations using prisma db push
+async function runMigrations(maxRetries = 10, delay = 3000) {
+  // Сначала проверяем подключение к БД с retry логикой
+  console.log("🔄 Checking database connection before applying schema...");
+  let dbConnected = false;
+  
   for (let i = 0; i < maxRetries; i++) {
     try {
       await prisma.$connect();
-      console.log("✅ Database connected successfully");
-      return true;
+      dbConnected = true;
+      console.log("✅ Database connection established");
+      break;
     } catch (error) {
       console.error(`❌ Database connection attempt ${i + 1}/${maxRetries} failed:`, error.message);
       if (i < maxRetries - 1) {
-        console.log(`⏳ Retrying in ${delay}ms...`);
+        console.log(`⏳ Retrying connection in ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
   }
+  
+  if (!dbConnected) {
+    console.error("❌ Failed to connect to database. Cannot apply schema.");
+    return false;
+  }
+  
+  // Теперь применяем схему
+  const { spawn } = await import('child_process');
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const result = await new Promise((resolve) => {
+        console.log(`🔄 Applying database schema (attempt ${i + 1}/${maxRetries})...`);
+        const process = spawn('npx', ['prisma', 'db', 'push', '--schema=../prisma/schema.prisma', '--accept-data-loss'], {
+          stdio: 'inherit',
+          cwd: '/app/server',
+          shell: true
+        });
+        
+        process.on('close', (code) => {
+          if (code === 0) {
+            console.log("✅ Database schema applied successfully");
+            resolve(true);
+          } else {
+            console.error(`❌ Schema application attempt ${i + 1}/${maxRetries} failed with code ${code}`);
+            resolve(false);
+          }
+        });
+        
+        process.on('error', (error) => {
+          console.error(`❌ Error applying schema (attempt ${i + 1}/${maxRetries}):`, error.message);
+          resolve(false);
+        });
+      });
+      
+      if (result) {
+        return true;
+      }
+      
+      if (i < maxRetries - 1) {
+        console.log(`⏳ Retrying schema application in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    } catch (error) {
+      console.error(`❌ Error in migration attempt ${i + 1}/${maxRetries}:`, error.message);
+      if (i < maxRetries - 1) {
+        console.log(`⏳ Retrying schema application in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
   return false;
 }
 
