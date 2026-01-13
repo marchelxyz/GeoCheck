@@ -19,23 +19,591 @@ console.log("🔍 Checking DATABASE_URL...");
 if (!DATABASE_URL) {
   console.error("❌ DATABASE_URL environment variable is not set!");
   console.error("Please make sure PostgreSQL service is connected in Railway.");
-  console.error("Railway should automatically provide DATABASE_URL when PostgreSQL is connected.");
   process.exit(1);
 } else {
-  // Check if DATABASE_URL contains template syntax (not resolved)
   if (DATABASE_URL.includes("${{") || DATABASE_URL.includes("{{")) {
     console.error("❌ DATABASE_URL contains unresolved template syntax:", DATABASE_URL);
-    console.error("This usually means Railway did not resolve the variable.");
-    console.error("Please check:");
-    console.error("1. PostgreSQL service is connected to your app service in Railway");
-    console.error("2. Variable name matches the service name (e.g., if service is named 'Postgres', use ${{Postgres.DATABASE_URL}})");
-    console.error("3. Or use Railway's automatic variables like POSTGRES_URL, POSTGRES_HOST, etc.");
     process.exit(1);
   }
-  // Mask password in DATABASE_URL for logging
   const maskedUrl = DATABASE_URL.replace(/:([^:@]+)@/, ":***@");
   console.log("📊 DATABASE_URL:", maskedUrl);
-  console.log("📊 DATABASE_URL length:", DATABASE_URL.length);
-  console.log("📊 DATABASE_URL starts with:", DATABASE_URL.substring(0, 20));
 }
 
+const app = express();
+const prisma = new PrismaClient();
+
+// Database connection retry function
+async function connectToDatabase(maxRetries = 30, delay = 3000) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await prisma.$connect();
+      console.log("✅ Database connected successfully");
+      return true;
+    } catch (error) {
+      console.error(`❌ Database connection attempt ${i + 1}/${maxRetries} failed:`, error.message);
+      if (i < maxRetries - 1) {
+        console.log(`⏳ Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  return false;
+}
+
+// Track if bot is running
+let botRunning = false;
+
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const PORT = process.env.PORT || 3000;
+
+if (!BOT_TOKEN) {
+  console.error('BOT_TOKEN is required!');
+  process.exit(1);
+}
+
+const bot = new Telegraf(BOT_TOKEN);
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static(join(__dirname, '../client/dist')));
+
+// Verify Telegram Web App data
+function verifyTelegramWebAppData(initData) {
+  try {
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get('hash');
+    urlParams.delete('hash');
+    
+    const dataCheckString = Array.from(urlParams.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+    
+    const secretKey = crypto
+      .createHmac('sha256', 'WebAppData')
+      .update(BOT_TOKEN)
+      .digest();
+    
+    const calculatedHash = crypto
+      .createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex');
+    
+    return calculatedHash === hash;
+  } catch (error) {
+    console.error('Error verifying Telegram data:', error);
+    return false;
+  }
+}
+
+// Parse Telegram Web App init data
+function parseInitData(initData) {
+  const urlParams = new URLSearchParams(initData);
+  const userStr = urlParams.get('user');
+  if (!userStr) return null;
+  return JSON.parse(userStr);
+}
+
+// Middleware to verify Telegram Web App
+function verifyTelegramWebApp(req, res, next) {
+  const initData = req.headers['x-telegram-init-data'];
+  if (!initData) {
+    return res.status(401).json({ error: 'Missing Telegram init data' });
+  }
+  
+  if (!verifyTelegramWebAppData(initData)) {
+    return res.status(401).json({ error: 'Invalid Telegram init data' });
+  }
+  
+  const user = parseInitData(initData);
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid user data' });
+  }
+  
+  req.telegramUser = user;
+  next();
+}
+
+// Haversine distance calculation
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371000; // Earth radius in meters
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Check if location is within any zone
+async function checkLocationInZones(lat, lon) {
+  const zones = await prisma.zone.findMany();
+  
+  for (const zone of zones) {
+    const distance = calculateDistance(lat, lon, zone.latitude, zone.longitude);
+    if (distance <= zone.radius) {
+      return { isWithinZone: true, distanceToZone: distance, zoneId: zone.id };
+    }
+  }
+  
+  // Find closest zone
+  const distances = zones.map(zone => ({
+    zone,
+    distance: calculateDistance(lat, lon, zone.latitude, zone.longitude)
+  }));
+  
+  const closest = distances.reduce((min, current) => 
+    current.distance < min.distance ? current : min
+  , distances[0] || { distance: Infinity });
+  
+  return { 
+    isWithinZone: false, 
+    distanceToZone: closest.distance || null,
+    zoneId: null
+  };
+}
+
+// API Routes
+
+// Get or create user
+app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id, first_name, last_name, username } = req.telegramUser;
+    const name = `${first_name || ''} ${last_name || ''}`.trim() || username || `User ${id}`;
+    
+    let user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+    
+    if (!user) {
+      // First user becomes director
+      const userCount = await prisma.user.count();
+      user = await prisma.user.create({
+        data: {
+          telegramId: String(id),
+          name,
+          role: userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE'
+        }
+      });
+    } else {
+      user = await prisma.user.update({
+        where: { telegramId: String(id) },
+        data: { name }
+      });
+    }
+    
+    res.json(user);
+  } catch (error) {
+    console.error('Error in /api/user:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get user role
+app.get('/api/user/role', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) },
+      select: { role: true }
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({ role: user.role });
+  } catch (error) {
+    console.error('Error in /api/user/role:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin command to claim director role
+app.post('/api/admin/claim', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { password } = req.body;
+    const { id } = req.telegramUser;
+    
+    if (password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+    
+    const user = await prisma.user.update({
+      where: { telegramId: String(id) },
+      data: { role: 'DIRECTOR' }
+    });
+    
+    res.json(user);
+  } catch (error) {
+    console.error('Error in /api/admin/claim:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Zones CRUD
+app.get('/api/zones', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+    
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const zones = await prisma.zone.findMany({
+      include: {
+        createdByUser: {
+          select: { name: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    res.json(zones);
+  } catch (error) {
+    console.error('Error in /api/zones:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { name, latitude, longitude, radius } = req.body;
+    
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+    
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    if (!name || latitude === undefined || longitude === undefined || !radius) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    const zone = await prisma.zone.create({
+      data: {
+        name,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        radius: parseFloat(radius),
+        createdBy: user.id
+      }
+    });
+    
+    res.json(zone);
+  } catch (error) {
+    console.error('Error in /api/zones POST:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/zones/:id', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: userId } = req.telegramUser;
+    const { id: zoneId } = req.params;
+    
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(userId) }
+    });
+    
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    await prisma.zone.delete({
+      where: { id: zoneId }
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error in /api/zones DELETE:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get check-in results (Director dashboard)
+app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+    
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const { status, startDate, endDate } = req.query;
+    
+    const where = {};
+    if (status) {
+      where.status = status;
+    }
+    if (startDate || endDate) {
+      where.requestedAt = {};
+      if (startDate) where.requestedAt.gte = new Date(startDate);
+      if (endDate) where.requestedAt.lte = new Date(endDate);
+    }
+    
+    const checkIns = await prisma.checkInRequest.findMany({
+      where,
+      include: {
+        user: {
+          select: { name: true, telegramId: true }
+        },
+        result: true
+      },
+      orderBy: { requestedAt: 'desc' },
+      take: 100
+    });
+    
+    res.json(checkIns);
+  } catch (error) {
+    console.error('Error in /api/check-ins:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+const WEB_APP_URL = process.env.WEB_APP_URL || `http://localhost:${PORT}`;
+
+// Bot handlers
+bot.start(async (ctx) => {
+  const userId = String(ctx.from.id);
+  
+  // Get or create user
+  let user = await prisma.user.findUnique({
+    where: { telegramId: userId }
+  });
+  
+  if (!user) {
+    const userCount = await prisma.user.count();
+    user = await prisma.user.create({
+      data: {
+        telegramId: userId,
+        name: `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || ctx.from.username || `User ${userId}`,
+        role: userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE'
+      }
+    });
+  }
+  
+  const keyboard = Markup.keyboard([
+    [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
+  ]).resize();
+  
+  await ctx.reply(
+    `Привет, ${user.name}! 👋\n\n` +
+    `Это бот для отслеживания геолокации сотрудников.\n` +
+    `Нажмите кнопку ниже, чтобы открыть приложение.`,
+    keyboard
+  );
+});
+
+bot.command('admin', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  const password = args[1];
+  
+  if (password !== ADMIN_PASSWORD) {
+    return ctx.reply('❌ Неверный пароль');
+  }
+  
+  const userId = String(ctx.from.id);
+  const user = await prisma.user.update({
+    where: { telegramId: userId },
+    data: { role: 'DIRECTOR' }
+  });
+  
+  await ctx.reply('✅ Вы получили права директора!');
+});
+
+// Handle location
+bot.on('location', async (ctx) => {
+  const userId = String(ctx.from.id);
+  const location = ctx.message.location;
+  
+  // Find pending check-in request
+  const user = await prisma.user.findUnique({
+    where: { telegramId: userId }
+  });
+  
+  if (!user) {
+    return ctx.reply('Пользователь не найден. Отправьте /start');
+  }
+  
+  const pendingRequest = await prisma.checkInRequest.findFirst({
+    where: {
+      userId: user.id,
+      status: 'PENDING'
+    },
+    orderBy: { requestedAt: 'desc' }
+  });
+  
+  if (!pendingRequest) {
+    return ctx.reply('Нет активных запросов на проверку');
+  }
+  
+  // Check location
+  const locationCheck = await checkLocationInZones(location.latitude, location.longitude);
+  
+  // Update request status
+  await prisma.checkInRequest.update({
+    where: { id: pendingRequest.id },
+    data: { status: 'COMPLETED' }
+  });
+  
+  // Create result
+  await prisma.checkInResult.create({
+    data: {
+      requestId: pendingRequest.id,
+      locationLat: location.latitude,
+      locationLon: location.longitude,
+      isWithinZone: locationCheck.isWithinZone,
+      distanceToZone: locationCheck.distanceToZone
+    }
+  });
+  
+  const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
+  await ctx.reply(`${status}\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
+});
+
+// Handle photo
+bot.on('photo', async (ctx) => {
+  const userId = String(ctx.from.id);
+  const photo = ctx.message.photo[ctx.message.photo.length - 1];
+  
+  const user = await prisma.user.findUnique({
+    where: { telegramId: userId }
+  });
+  
+  if (!user) {
+    return ctx.reply('Пользователь не найден. Отправьте /start');
+  }
+  
+  const pendingRequest = await prisma.checkInRequest.findFirst({
+    where: {
+      userId: user.id,
+      status: 'PENDING'
+    },
+    orderBy: { requestedAt: 'desc' }
+  });
+  
+  if (pendingRequest) {
+    // Update result with photo
+    const result = await prisma.checkInResult.findUnique({
+      where: { requestId: pendingRequest.id }
+    });
+    
+    if (result) {
+      await prisma.checkInResult.update({
+        where: { id: result.id },
+        data: { photoFileId: photo.file_id }
+      });
+      await ctx.reply('✅ Фото сохранено!');
+    }
+  }
+});
+
+// Cron job for random check-ins
+cron.schedule('*/30 * * * *', async () => {
+  const now = new Date();
+  const hour = now.getHours();
+  
+  // Only between 9:00 and 18:00
+  if (hour < 9 || hour >= 18) {
+    return;
+  }
+  
+  // Get all employees
+  const employees = await prisma.user.findMany({
+    where: { role: 'EMPLOYEE' }
+  });
+  
+  if (employees.length === 0) {
+    return;
+  }
+  
+  // Filter employees who haven't been checked in last 2 hours
+  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+  const recentCheckIns = await prisma.checkInRequest.findMany({
+    where: {
+      requestedAt: { gte: twoHoursAgo },
+      status: 'COMPLETED'
+    },
+    select: { userId: true }
+  });
+  
+  const recentUserIds = new Set(recentCheckIns.map(c => c.userId));
+  const availableEmployees = employees.filter(e => !recentUserIds.has(e.id));
+  
+  if (availableEmployees.length === 0) {
+    return;
+  }
+  
+  // Pick random employee
+  const randomEmployee = availableEmployees[Math.floor(Math.random() * availableEmployees.length)];
+  
+  // Create check-in request
+  await prisma.checkInRequest.create({
+    data: {
+      userId: randomEmployee.id,
+      status: 'PENDING'
+    }
+  });
+  
+  // Send notification
+  try {
+    await bot.telegram.sendMessage(
+      randomEmployee.telegramId,
+      '📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
+    );
+  } catch (error) {
+    console.error('Error sending check-in notification:', error);
+  }
+  
+  // Notify director if employee is not in zone
+  const directors = await prisma.user.findMany({
+    where: { role: 'DIRECTOR' }
+  });
+  
+  for (const director of directors) {
+    try {
+      await bot.telegram.sendMessage(
+        director.telegramId,
+        `🔔 Запрос на проверку отправлен сотруднику ${randomEmployee.name}`
+      );
+    } catch (error) {
+      console.error('Error notifying director:', error);
+    }
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// Start bot
+bot.launch().then(() => {
+  console.log('Bot started');
+}).catch((error) => {
+  console.error('Error starting bot:', error);
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
