@@ -546,11 +546,7 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       await bot.telegram.sendMessage(
         employee.telegramId,
         '📍 Проверка местоположения!
-
-
-
       );
-
 
       );
     } catch (error) {
