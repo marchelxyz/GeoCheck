@@ -16,6 +16,24 @@ dotenv.config();
 const app = express();
 const prisma = new PrismaClient();
 
+// Database connection retry function
+async function connectToDatabase(maxRetries = 10, delay = 2000) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await prisma.$connect();
+      console.log('✅ Database connected successfully');
+      return true;
+    } catch (error) {
+      console.error(`❌ Database connection attempt ${i + 1}/${maxRetries} failed:`, error.message);
+      if (i < maxRetries - 1) {
+        console.log(`⏳ Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  return false;
+}
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const PORT = process.env.PORT || 3000;
@@ -559,14 +577,35 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-// Start bot
-bot.launch().then(() => {
-  console.log('Bot started');
-}).catch((error) => {
-  console.error('Error starting bot:', error);
-  process.exit(1);
-});
+// Start bot with database connection check
+async function startBot() {
+  console.log('🔄 Connecting to database...');
+  const connected = await connectToDatabase();
+  
+  if (!connected) {
+    console.error('❌ Failed to connect to database after multiple retries');
+    console.error('Please check your DATABASE_URL environment variable');
+    process.exit(1);
+  }
+  
+  try {
+    await bot.launch();
+    console.log('✅ Bot started successfully');
+  } catch (error) {
+    console.error('❌ Error starting bot:', error);
+    process.exit(1);
+  }
+}
+
+startBot();
+
 
 // Graceful shutdown
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', async () => {
+  await bot.stop('SIGINT');
+  await prisma.$disconnect();
+});
+process.once('SIGTERM', async () => {
+  await bot.stop('SIGTERM');
+  await prisma.$disconnect();
+});
