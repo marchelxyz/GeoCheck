@@ -25,6 +25,13 @@ if (!DATABASE_URL) {
 }
 
 const app = express();
+// Ensure DATABASE_URL is set
+if (!process.env.DATABASE_URL) {
+  console.error("❌ DATABASE_URL environment variable is not set!");
+  console.error("Please make sure PostgreSQL service is connected in Railway.");
+  console.error("Railway should automatically provide DATABASE_URL when PostgreSQL is connected.");
+  process.exit(1);
+}
 const prisma = new PrismaClient();
 
 // Database connection retry function
