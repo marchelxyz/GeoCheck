@@ -573,7 +573,7 @@ bot.start(async (ctx) => {
   });
 
   if (!user) {
-    await ctx.reply(
+        await ctx.reply(
       '👋 Привет!
 
 ' +
