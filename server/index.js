@@ -13,45 +13,8 @@ const __dirname = dirname(__filename);
 
 dotenv.config();
 
-// Check and log DATABASE_URL
-const DATABASE_URL = process.env.DATABASE_URL;
-console.log("🔍 Checking DATABASE_URL...");
-if (!DATABASE_URL) {
-  console.error("❌ DATABASE_URL environment variable is not set!");
-  console.error("Please make sure PostgreSQL service is connected in Railway.");
-  process.exit(1);
-} else {
-  if (DATABASE_URL.includes("${{") || DATABASE_URL.includes("{{")) {
-    console.error("❌ DATABASE_URL contains unresolved template syntax:", DATABASE_URL);
-    process.exit(1);
-  }
-  const maskedUrl = DATABASE_URL.replace(/:([^:@]+)@/, ":***@");
-  console.log("📊 DATABASE_URL:", maskedUrl);
-}
-
 const app = express();
 const prisma = new PrismaClient();
-
-// Database connection retry function
-async function connectToDatabase(maxRetries = 30, delay = 3000) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      await prisma.$connect();
-      console.log("✅ Database connected successfully");
-      return true;
-    } catch (error) {
-      console.error(`❌ Database connection attempt ${i + 1}/${maxRetries} failed:`, error.message);
-      if (i < maxRetries - 1) {
-        console.log(`⏳ Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-  return false;
-}
-
-// Track if bot is running
-let botRunning = false;
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
@@ -596,14 +559,39 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-// Start bot
-bot.launch().then(() => {
-  console.log('Bot started');
-}).catch((error) => {
-  console.error('Error starting bot:', error);
-  process.exit(1);
-});
+// Start bot with database connection check
+async function startBot() {
+  console.log("🔄 Connecting to database...");
+  const connected = await connectToDatabase();
+  
+  if (!connected) {
+    console.error("❌ Failed to connect to database after multiple retries");
+    process.exit(1);
+  }
+  
+  try {
+    await bot.launch();
+    botRunning = true;
+    console.log("✅ Bot started successfully");
+  } catch (error) {
+    console.error("❌ Error starting bot:", error);
+    process.exit(1);
+  }
+}
+
+startBot();
 
 // Graceful shutdown
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once("SIGINT", async () => {
+  if (botRunning) {
+    await bot.stop("SIGINT");
+  }
+  await prisma.$disconnect();
+});
+
+process.once("SIGTERM", async () => {
+  if (botRunning) {
+    await bot.stop("SIGTERM");
+  }
+  await prisma.$disconnect();
+});
