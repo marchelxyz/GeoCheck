@@ -1299,15 +1299,14 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
 });
 
 // Submit photo for check-in
-app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
+app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), async (req, res) => {
   try {
     const { id } = req.telegramUser;
-    const { photoFileId } = req.body;
 
     log('INFO', 'CHECKIN', 'Submit photo for check-in', {
       requestId: req.requestId,
       telegramId: id,
-      hasPhotoFileId: !!photoFileId
+      hasFile: !!req.file
     });
 
     const user = await prisma.user.findUnique({
@@ -1338,6 +1337,43 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
       return res.status(404).json({ error: 'No pending check-in request' });
     }
 
+    let photoFileId = null;
+    let photoPath = null;
+    let photoUrl = null;
+
+    // Если файл загружен через multer, сохраняем его в S3
+    if (req.file) {
+      try {
+        const { uploadPhoto } = await import('./s3Service.js');
+        const fileName = `check-in-${pendingRequest.id}-${Date.now()}.jpg`;
+        photoPath = `photos/${fileName}`;
+        photoUrl = await uploadPhoto(req.file.path, photoPath);
+        
+        // Удаляем временный файл
+        fs.unlinkSync(req.file.path);
+        
+        log('INFO', 'CHECKIN', 'Photo uploaded to S3', {
+          requestId: req.requestId,
+          userId: user.id,
+          checkInRequestId: pendingRequest.id,
+          photoPath
+        });
+      } catch (error) {
+        log('ERROR', 'CHECKIN', 'Error uploading photo to S3', {
+          requestId: req.requestId,
+          userId: user.id,
+          checkInRequestId: pendingRequest.id,
+          error: error.message
+        });
+        // Продолжаем с file_id если S3 не работает
+      }
+    }
+
+    // Если photoFileId передан в теле запроса (для совместимости)
+    if (req.body.photoFileId && !photoPath) {
+      photoFileId = req.body.photoFileId;
+    }
+
     const result = await prisma.checkInResult.findUnique({
       where: { requestId: pendingRequest.id }
     });
@@ -1345,7 +1381,11 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
     if (result) {
       await prisma.checkInResult.update({
         where: { id: result.id },
-        data: { photoFileId }
+        data: {
+          photoFileId: photoFileId || result.photoFileId,
+          photoPath: photoPath || result.photoPath,
+          photoUrl: photoUrl || result.photoUrl
+        }
       });
       log('INFO', 'CHECKIN', 'Photo added to existing check-in result', {
         requestId: req.requestId,
@@ -1360,7 +1400,9 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
           locationLat: 0,
           locationLon: 0,
           isWithinZone: false,
-          photoFileId
+          photoFileId,
+          photoPath,
+          photoUrl
         }
       });
       log('INFO', 'CHECKIN', 'Check-in result created with photo', {
@@ -1772,6 +1814,21 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
   res.json({ status: 'ok' });
+});
+
+// SPA fallback route - serve index.html for all non-API routes
+app.get('*', (req, res) => {
+  // Skip API routes and static assets
+  if (req.path.startsWith('/api/') || req.path.startsWith('/assets/')) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  
+  log('INFO', 'SPA', 'Serving index.html for SPA route', {
+    requestId: req.requestId,
+    path: req.path
+  });
+  
+  res.sendFile(join(__dirname, '../client/dist/index.html'));
 });
 
 const WEB_APP_URL = process.env.WEB_APP_URL || `http://localhost:${PORT}`;
