@@ -13,6 +13,8 @@ model User {
   name          String?
   role          UserRole         @default(EMPLOYEE)
   checkInsEnabled Boolean        @default(true)
+  notificationsEnabled Boolean   @default(true)  // Уведомления о пропущенных чекинах и вне зоны
+  weeklyZoneReminderEnabled Boolean @default(true)  // Напоминание о зонах в понедельник
   createdAt     DateTime         @default(now())
   
   zones         ZoneEmployee[]
