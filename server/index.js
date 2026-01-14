@@ -8,7 +8,6 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import multer from 'multer';
-import FormData from 'form-data';
 import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
