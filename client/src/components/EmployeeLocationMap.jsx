@@ -24,10 +24,16 @@ function MapResizeHandler() {
   const map = useMap();
   
   useEffect(() => {
-    // Invalidate size when component mounts to ensure map renders correctly
-    setTimeout(() => {
-      map.invalidateSize();
-    }, 100);
+    // Invalidate size multiple times to ensure map renders correctly in modal
+    const timeouts = [
+      setTimeout(() => map.invalidateSize(), 100),
+      setTimeout(() => map.invalidateSize(), 300),
+      setTimeout(() => map.invalidateSize(), 500),
+    ];
+    
+    return () => {
+      timeouts.forEach(clearTimeout);
+    };
   }, [map]);
   
   return null;
@@ -36,10 +42,10 @@ function MapResizeHandler() {
 export default function EmployeeLocationMap({ employeeName, onLocationSelected, onCancel }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [mapReady, setMapReady] = useState(false);
   const defaultCenter = [55.7558, 37.6173]; // Moscow coordinates
   const [center, setCenter] = useState(defaultCenter);
   const mapRef = useRef(null);
+  const containerRef = useRef(null);
 
   useEffect(() => {
     // Try to get current geolocation for initial map center
@@ -61,17 +67,44 @@ export default function EmployeeLocationMap({ employeeName, onLocationSelected, 
     }
   }, []);
 
+  // Invalidate map size when modal opens
+  useEffect(() => {
+    if (containerRef.current && mapRef.current) {
+      const timeouts = [
+        setTimeout(() => {
+          if (mapRef.current) {
+            mapRef.current.invalidateSize();
+          }
+        }, 100),
+        setTimeout(() => {
+          if (mapRef.current) {
+            mapRef.current.invalidateSize();
+          }
+        }, 300),
+        setTimeout(() => {
+          if (mapRef.current) {
+            mapRef.current.invalidateSize();
+          }
+        }, 500),
+      ];
+      
+      return () => {
+        timeouts.forEach(clearTimeout);
+      };
+    }
+  }, []);
+
   const handleMapClick = (latlng) => {
     setSelectedLocation(latlng);
   };
 
   const handleMapCreated = (map) => {
     mapRef.current = map;
-    // Invalidate size after a short delay to ensure modal is fully rendered
-    setTimeout(() => {
-      map.invalidateSize();
-      setMapReady(true);
-    }, 200);
+    // Invalidate size immediately and after delays
+    setTimeout(() => map.invalidateSize(), 0);
+    setTimeout(() => map.invalidateSize(), 100);
+    setTimeout(() => map.invalidateSize(), 300);
+    setTimeout(() => map.invalidateSize(), 500);
   };
 
   const handleConfirm = async () => {
@@ -106,21 +139,18 @@ export default function EmployeeLocationMap({ employeeName, onLocationSelected, 
           </p>
         </div>
 
-        <div className="flex-1 relative" style={{ minHeight: '400px', height: '500px' }}>
-          {!mapReady && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gray-100 z-10">
-              <div className="text-center">
-                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                <p className="mt-2 text-sm text-gray-600">Загрузка карты...</p>
-              </div>
-            </div>
-          )}
+        <div 
+          ref={containerRef}
+          className="flex-1 relative" 
+          style={{ minHeight: '400px', height: '500px' }}
+        >
           <MapContainer
             center={center}
             zoom={13}
             style={{ height: '100%', width: '100%' }}
             whenCreated={handleMapCreated}
             scrollWheelZoom={true}
+            key={`map-${center[0]}-${center[1]}`}
           >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
