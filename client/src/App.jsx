@@ -139,12 +139,16 @@ function App() {
     }
   };
 
-  if (loading) {
-    return <Loading />;
-  }
-
   // Если есть requestId в URL, показываем интерфейс проверки
-  if (requestId && user) {
+  // Не ждем загрузки пользователя, так как CheckInInterface может работать независимо
+  if (requestId) {
+    // Если еще идет загрузка, показываем Loading
+    if (loading) {
+      return <Loading />;
+    }
+    
+    // Показываем CheckInInterface независимо от наличия user
+    // Если пользователь не зарегистрирован, API вернет ошибку, которую обработает CheckInInterface
     return (
       <CheckInInterface 
         requestId={requestId}
@@ -154,6 +158,10 @@ function App() {
         }}
       />
     );
+  }
+
+  if (loading) {
+    return <Loading />;
   }
 
   if (!user) {
