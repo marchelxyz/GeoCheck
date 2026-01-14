@@ -28,6 +28,23 @@ export default function CheckInInterface({ requestId, onComplete }) {
     };
   }, []);
 
+  // Проверяем завершение чекинга и закрываем мини-приложение
+  useEffect(() => {
+    if (locationSent && photoSent) {
+      // Небольшая задержка перед закрытием, чтобы пользователь увидел сообщение о завершении
+      const timer = setTimeout(() => {
+        if (window.Telegram?.WebApp) {
+          window.Telegram.WebApp.close();
+        }
+        if (onComplete) {
+          onComplete();
+        }
+      }, 2000); // 2 секунды задержки
+
+      return () => clearTimeout(timer);
+    }
+  }, [locationSent, photoSent, onComplete]);
+
   const uploadPhoto = async (file) => {
     setLoading(true);
     setPhotoError(null);
@@ -54,13 +71,6 @@ export default function CheckInInterface({ requestId, onComplete }) {
       setPhotoSent(true);
       if (window.Telegram?.WebApp) {
         window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
-      }
-
-      // Проверяем, все ли отправлено
-      if (locationSent && photoSent) {
-        if (onComplete) {
-          onComplete();
-        }
       }
     } catch (error) {
       console.error('Error sending photo:', error);
@@ -350,7 +360,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           {locationSent && photoSent && (
             <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
               <p className="text-sm text-green-800 text-center">
-                ✅ Проверка завершена! Все данные отправлены.
+                ✅ Проверка завершена! Все данные отправлены. Приложение закроется автоматически...
               </p>
             </div>
           )}
