@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 export default function CheckInInterface({ requestId, onComplete }) {
@@ -9,9 +9,169 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const [isWithinZone, setIsWithinZone] = useState(null);
   const [distanceToZone, setDistanceToZone] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const getTelegramInitData = () => {
     return window.Telegram?.WebApp?.initData || '';
+  };
+
+  useEffect(() => {
+    return () => {
+      // Останавливаем поток камеры при размонтировании компонента
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
+
+  const uploadPhoto = async (file) => {
+    setLoading(true);
+    setPhotoError(null);
+
+    try {
+      const initData = getTelegramInitData();
+      const formData = new FormData();
+      formData.append('photo', file);
+      if (requestId) {
+        formData.append('requestId', requestId);
+      }
+
+      await axios.post(
+        '/api/check-in/photo',
+        formData,
+        {
+          headers: {
+            'x-telegram-init-data': initData,
+            'Content-Type': 'multipart/form-data'
+          }
+        }
+      );
+
+      setPhotoSent(true);
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
+      }
+
+      // Проверяем, все ли отправлено
+      if (locationSent && photoSent) {
+        if (onComplete) {
+          onComplete();
+        }
+      }
+    } catch (error) {
+      console.error('Error sending photo:', error);
+      setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startCamera = async () => {
+    setLoading(true);
+    setPhotoError(null);
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          facingMode: 'environment', // Приоритет задней камере
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        }
+      });
+      
+      streamRef.current = stream;
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+        setCameraActive(true);
+      }
+    } catch (err) {
+      console.error('Error accessing camera with MediaDevices API:', err);
+      setPhotoError('Не удалось получить доступ к камере. Пожалуйста, разрешите доступ.');
+      // Fallback к input с capture
+      triggerFileInputCapture();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setCameraActive(false);
+  };
+
+  const takePhoto = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    setLoading(true);
+    setPhotoError(null);
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext('2d');
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(async (blob) => {
+      if (!blob) {
+        setPhotoError('Не удалось создать файл изображения.');
+        setLoading(false);
+        return;
+      }
+
+      const file = new File([blob], 'checkin_photo.jpg', { type: 'image/jpeg' });
+      await uploadPhoto(file);
+      stopCamera();
+    }, 'image/jpeg', 0.9);
+  };
+
+  const triggerFileInputCapture = () => {
+    // Создаем input элемент, если его еще нет
+    if (!fileInputRef.current) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.capture = 'environment'; // Принудительно открывает камеру на мобильных устройствах
+      input.style.position = 'fixed';
+      input.style.top = '-1000px';
+      input.style.left = '-1000px';
+      input.style.opacity = '0';
+      input.style.pointerEvents = 'none';
+      
+      input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          await uploadPhoto(file);
+        }
+        // Сбрасываем значение input для возможности повторного выбора
+        input.value = '';
+      };
+      
+      document.body.appendChild(input);
+      fileInputRef.current = input;
+    }
+    
+    // Кликаем по input
+    fileInputRef.current.click();
+  };
+
+  const handleSendPhoto = async () => {
+    // Сначала пытаемся использовать MediaDevices API для прямого доступа к камере
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      startCamera();
+    } else {
+      // Fallback к input с capture
+      triggerFileInputCapture();
+    }
   };
 
   const handleSendLocation = async () => {
@@ -70,70 +230,39 @@ export default function CheckInInterface({ requestId, onComplete }) {
     );
   };
 
-  const handleSendPhoto = async () => {
-    // Согласно документации Telegram Mini Apps, используем стандартный HTML5 input с capture
-    // Это работает лучше всего в Telegram WebView
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    // Используем capture для открытия камеры напрямую
-    // 'environment' - задняя камера, 'user' - передняя
-    input.capture = 'environment';
-    input.style.display = 'none';
-
-    input.onchange = async (e) => {
-      const file = e.target.files[0];
-      if (!file) {
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-      setPhotoError(null);
-
-      try {
-        const initData = getTelegramInitData();
-        const formData = new FormData();
-        formData.append('photo', file);
-
-        const response = await axios.post(
-          '/api/check-in/photo',
-          formData,
-          {
-            headers: {
-              'x-telegram-init-data': initData,
-              'Content-Type': 'multipart/form-data'
-            }
-          }
-        );
-
-        setPhotoSent(true);
-        if (window.Telegram?.WebApp) {
-          window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
-        }
-
-        // Проверяем, все ли отправлено
-        if (locationSent && photoSent) {
-          if (onComplete) {
-            onComplete();
-          }
-        }
-      } catch (error) {
-        console.error('Error sending photo:', error);
-        setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    // Добавляем input в DOM, кликаем и удаляем
-    document.body.appendChild(input);
-    input.click();
-    document.body.removeChild(input);
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+      {/* Модальное окно с камерой */}
+      {cameraActive && (
+        <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex flex-col items-center justify-center p-4">
+          <video 
+            ref={videoRef} 
+            className="max-w-full max-h-[70vh] object-contain rounded-lg"
+            autoPlay 
+            playsInline
+          ></video>
+          <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
+          <div className="mt-4 flex space-x-4">
+            <button
+              onClick={takePhoto}
+              className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-medium rounded-full shadow-lg transition-colors"
+              disabled={loading}
+            >
+              📷 Сделать фото
+            </button>
+            <button
+              onClick={stopCamera}
+              className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-full shadow-lg transition-colors"
+              disabled={loading}
+            >
+              ✕ Отмена
+            </button>
+          </div>
+          {loading && <p className="text-white mt-4">Загрузка...</p>}
+          {photoError && <p className="text-red-400 mt-4">{photoError}</p>}
+        </div>
+      )}
+
       <div className="max-w-md mx-auto mt-8">
         <div className="bg-white rounded-2xl shadow-xl p-6">
           <div className="text-center mb-6">
@@ -207,7 +336,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
 
             <button
               onClick={handleSendPhoto}
-              disabled={photoSent || loading}
+              disabled={photoSent || loading || cameraActive}
               className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
