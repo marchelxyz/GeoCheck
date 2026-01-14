@@ -14,7 +14,8 @@ model User {
   role          UserRole         @default(EMPLOYEE)
   createdAt     DateTime         @default(now())
   
-  zones         Zone[]
+  zones         ZoneEmployee[]
+  createdZones  Zone[]           @relation("ZoneCreator")
   checkInRequests CheckInRequest[]
   
   @@map("users")
@@ -29,9 +30,22 @@ model Zone {
   createdBy   String
   createdAt   DateTime @default(now())
   
-  createdByUser User   @relation(fields: [createdBy], references: [id])
+  createdByUser User   @relation("ZoneCreator", fields: [createdBy], references: [id])
+  employees     ZoneEmployee[]
   
   @@map("zones")
+}
+
+model ZoneEmployee {
+  id       String @id @default(cuid())
+  zoneId  String
+  userId  String
+  
+  zone    Zone   @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([zoneId, userId])
+  @@map("zone_employees")
 }
 
 model CheckInRequest {
@@ -51,7 +65,9 @@ model CheckInResult {
   requestId     String   @unique
   locationLat   Float
   locationLon   Float
-  photoFileId   String?
+  photoFileId   String?  // Временный file_id от Telegram (для совместимости)
+  photoUrl      String?  // URL сохраненного фото (для долгосрочного хранения)
+  photoPath     String?  // Путь к файлу на сервере (если храним локально)
   isWithinZone  Boolean
   distanceToZone Float?
   timestamp     DateTime @default(now())
