@@ -85,28 +85,52 @@ export default function CheckInInterface({ requestId, onComplete }) {
     setPhotoError(null);
     
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: 'environment', // Приоритет задней камере
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
+      // Пробуем разные варианты конфигурации камеры для максимальной совместимости
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'environment' }, // Приоритет задней камере
+          width: { ideal: 1920, min: 640 },
+          height: { ideal: 1080, min: 480 }
         }
-      });
+      };
+
+      // Сначала пробуем с идеальными параметрами
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        // Если не получилось, пробуем упрощенную конфигурацию
+        console.warn('Failed with ideal constraints, trying simplified:', err);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment'
+          }
+        });
+      }
       
       streamRef.current = stream;
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        await videoRef.current.play();
         setCameraActive(true);
+        setLoading(false);
       }
     } catch (err) {
       console.error('Error accessing camera with MediaDevices API:', err);
-      setPhotoError('Не удалось получить доступ к камере. Пожалуйста, разрешите доступ.');
-      // Fallback к input с capture
-      triggerFileInputCapture();
-    } finally {
+      setPhotoError('Не удалось получить доступ к камере. Пожалуйста, разрешите доступ к камере в настройках браузера.');
       setLoading(false);
+      
+      // Не используем fallback на input, так как он открывает галерею в Telegram
+      // Вместо этого показываем сообщение пользователю
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.showAlert(
+          'Не удалось открыть камеру. Пожалуйста:\n\n' +
+          '1. Разрешите доступ к камере в настройках браузера\n' +
+          '2. Убедитесь, что камера не используется другим приложением\n' +
+          '3. Попробуйте перезагрузить страницу'
+        );
+      }
     }
   };
 
@@ -126,6 +150,14 @@ export default function CheckInInterface({ requestId, onComplete }) {
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
+    
+    // Ждем, пока видео будет готово
+    if (video.readyState < 2) {
+      await new Promise((resolve) => {
+        video.onloadedmetadata = resolve;
+      });
+    }
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const context = canvas.getContext('2d');
@@ -144,44 +176,18 @@ export default function CheckInInterface({ requestId, onComplete }) {
     }, 'image/jpeg', 0.9);
   };
 
-  const triggerFileInputCapture = () => {
-    // Создаем input элемент, если его еще нет
-    if (!fileInputRef.current) {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.capture = 'environment'; // Принудительно открывает камеру на мобильных устройствах
-      input.style.position = 'fixed';
-      input.style.top = '-1000px';
-      input.style.left = '-1000px';
-      input.style.opacity = '0';
-      input.style.pointerEvents = 'none';
-      
-      input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          await uploadPhoto(file);
-        }
-        // Сбрасываем значение input для возможности повторного выбора
-        input.value = '';
-      };
-      
-      document.body.appendChild(input);
-      fileInputRef.current = input;
-    }
-    
-    // Кликаем по input
-    fileInputRef.current.click();
-  };
-
   const handleSendPhoto = async () => {
-    // Сначала пытаемся использовать MediaDevices API для прямого доступа к камере
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      startCamera();
-    } else {
-      // Fallback к input с capture
-      triggerFileInputCapture();
+    // Проверяем поддержку MediaDevices API
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setPhotoError('Ваш браузер не поддерживает доступ к камере. Пожалуйста, используйте современный браузер или обновите Telegram.');
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.showAlert('Ваш браузер не поддерживает доступ к камере. Пожалуйста, обновите Telegram до последней версии.');
+      }
+      return;
     }
+
+    // Прямой вызов камеры через MediaDevices API
+    await startCamera();
   };
 
   const handleSendLocation = async () => {
@@ -250,6 +256,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
             className="max-w-full max-h-[70vh] object-contain rounded-lg"
             autoPlay 
             playsInline
+            muted
           ></video>
           <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
           <div className="mt-4 flex space-x-4">
@@ -269,7 +276,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
             </button>
           </div>
           {loading && <p className="text-white mt-4">Загрузка...</p>}
-          {photoError && <p className="text-red-400 mt-4">{photoError}</p>}
+          {photoError && <p className="text-red-400 mt-4 text-center max-w-md">{photoError}</p>}
         </div>
       )}
 
@@ -353,7 +360,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              <span>{photoSent ? 'Фото отправлено' : 'Отправить фото с камеры'}</span>
+              <span>{photoSent ? 'Фото отправлено' : 'Открыть камеру'}</span>
             </button>
           </div>
 
