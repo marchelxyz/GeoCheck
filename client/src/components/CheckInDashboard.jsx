@@ -1,24 +1,128 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 export default function CheckInDashboard({ checkIns: initialCheckIns }) {
   const [checkIns, setCheckIns] = useState(initialCheckIns || []);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState(null);
+  const [timeGrouping, setTimeGrouping] = useState('day'); // 'hour', 'day', 'week', 'date'
+  const [selectedUser, setSelectedUser] = useState('all');
+  const [sortBy, setSortBy] = useState('date'); // 'date', 'user', 'status'
 
   useEffect(() => {
     setCheckIns(initialCheckIns || []);
   }, [initialCheckIns]);
 
-  const filteredCheckIns = checkIns.filter(checkIn => {
-    const result = checkIn.result;
-    if (!result) return filter === 'all';
+  // Получаем список уникальных пользователей
+  const users = useMemo(() => {
+    const uniqueUsers = new Set();
+    checkIns.forEach(checkIn => {
+      if (checkIn.user?.name) {
+        uniqueUsers.add(checkIn.user.name);
+      }
+    });
+    return Array.from(uniqueUsers).sort();
+  }, [checkIns]);
+
+  // Фильтрация по пользователю
+  const userFilteredCheckIns = useMemo(() => {
+    if (selectedUser === 'all') return checkIns;
+    return checkIns.filter(checkIn => checkIn.user?.name === selectedUser);
+  }, [checkIns, selectedUser]);
+
+  // Фильтрация по статусу
+  const filteredCheckIns = useMemo(() => {
+    return userFilteredCheckIns.filter(checkIn => {
+      const result = checkIn.result;
+      if (!result) return filter === 'all';
+      
+      if (filter === 'success') return result.isWithinZone === true;
+      if (filter === 'failed') return result.isWithinZone === false;
+      return true;
+    });
+  }, [userFilteredCheckIns, filter]);
+
+  // Группировка данных для диаграммы
+  const chartData = useMemo(() => {
+    const grouped = {};
     
-    if (filter === 'success') return result.isWithinZone === true;
-    if (filter === 'failed') return result.isWithinZone === false;
-    return true;
-  });
+    userFilteredCheckIns.forEach(checkIn => {
+      const date = new Date(checkIn.requestedAt);
+      let key;
+      
+      switch (timeGrouping) {
+        case 'hour':
+          key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:00`;
+          break;
+        case 'day':
+          key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+          break;
+        case 'week':
+          const weekStart = new Date(date);
+          weekStart.setDate(date.getDate() - date.getDay());
+          key = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
+          break;
+        case 'date':
+        default:
+          key = date.toLocaleDateString('ru-RU');
+          break;
+      }
+      
+      if (!grouped[key]) {
+        grouped[key] = {
+          period: key,
+          inZone: 0,
+          outZone: 0,
+          notSent: 0
+        };
+      }
+      
+      if (checkIn.status === 'COMPLETED' && checkIn.result) {
+        if (checkIn.result.isWithinZone === true) {
+          grouped[key].inZone++;
+        } else {
+          grouped[key].outZone++;
+        }
+      } else if (checkIn.status === 'MISSED' || checkIn.status === 'PENDING') {
+        grouped[key].notSent++;
+      }
+    });
+    
+    return Object.values(grouped).sort((a, b) => {
+      return new Date(a.period) - new Date(b.period);
+    });
+  }, [userFilteredCheckIns, timeGrouping]);
+
+  // Сортировка списка проверок
+  const sortedCheckIns = useMemo(() => {
+    const sorted = [...filteredCheckIns];
+    
+    switch (sortBy) {
+      case 'date':
+        sorted.sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt));
+        break;
+      case 'user':
+        sorted.sort((a, b) => {
+          const nameA = a.user?.name || '';
+          const nameB = b.user?.name || '';
+          return nameA.localeCompare(nameB);
+        });
+        break;
+      case 'status':
+        sorted.sort((a, b) => {
+          const statusA = a.status || '';
+          const statusB = b.status || '';
+          return statusA.localeCompare(statusB);
+        });
+        break;
+      default:
+        break;
+    }
+    
+    return sorted;
+  }, [filteredCheckIns, sortBy]);
 
   const formatDistance = (distance) => {
     if (distance === null || distance === undefined) return 'N/A';
@@ -28,75 +132,201 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
 
   const successfulCount = checkIns.filter(c => c.result?.isWithinZone === true).length;
   const failedCount = checkIns.filter(c => c.result?.isWithinZone === false).length;
+  const notSentCount = checkIns.filter(c => c.status === 'MISSED' || c.status === 'PENDING').length;
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-4">
+      {/* Статистика */}
+      <div className="grid grid-cols-4 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <div className="text-sm text-gray-600">Всего проверок</div>
           <div className="text-2xl font-bold text-gray-800">{checkIns.length}</div>
         </div>
         <div className="bg-green-50 rounded-lg shadow p-4">
-          <div className="text-sm text-green-600">Успешных</div>
+          <div className="text-sm text-green-600">В зоне</div>
           <div className="text-2xl font-bold text-green-700">
             {successfulCount}
           </div>
         </div>
         <div className="bg-red-50 rounded-lg shadow p-4">
-          <div className="text-sm text-red-600">Неудачных</div>
+          <div className="text-sm text-red-600">Вне зоны</div>
           <div className="text-2xl font-bold text-red-700">
             {failedCount}
           </div>
         </div>
-      </div>
-
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="flex space-x-2">
-          <button
-            onClick={() => setFilter('all')}
-            className={`px-4 py-2 rounded-md text-sm font-medium ${
-              filter === 'all'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Все
-          </button>
-          <button
-            onClick={() => setFilter('success')}
-            className={`px-4 py-2 rounded-md text-sm font-medium ${
-              filter === 'success'
-                ? 'bg-green-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            ✅ Успешные
-          </button>
-          <button
-            onClick={() => setFilter('failed')}
-            className={`px-4 py-2 rounded-md text-sm font-medium ${
-              filter === 'failed'
-                ? 'bg-red-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            ❌ Неудачные
-          </button>
+        <div className="bg-yellow-50 rounded-lg shadow p-4">
+          <div className="text-sm text-yellow-600">Не отправлено</div>
+          <div className="text-2xl font-bold text-yellow-700">
+            {notSentCount}
+          </div>
         </div>
       </div>
 
+      {/* Диаграмма */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h2 className="text-xl font-bold text-gray-800 mb-4">Тенденция по отчетам</h2>
+        
+        {/* Фильтры для диаграммы */}
+        <div className="mb-4 flex flex-wrap gap-2">
+          <div className="flex items-center space-x-2">
+            <label className="text-sm font-medium text-gray-700">Группировка:</label>
+            <select
+              value={timeGrouping}
+              onChange={(e) => setTimeGrouping(e.target.value)}
+              className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="hour">По часам</option>
+              <option value="day">По дням</option>
+              <option value="week">По неделям</option>
+              <option value="date">По датам</option>
+            </select>
+          </div>
+          
+          <div className="flex items-center space-x-2">
+            <label className="text-sm font-medium text-gray-700">Пользователь:</label>
+            <select
+              value={selectedUser}
+              onChange={(e) => setSelectedUser(e.target.value)}
+              className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="all">Все пользователи</option>
+              {users.map(user => (
+                <option key={user} value={user}>{user}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* График */}
+        {chartData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={400}>
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis 
+                dataKey="period" 
+                angle={-45}
+                textAnchor="end"
+                height={80}
+                interval={0}
+                style={{ fontSize: '12px' }}
+              />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line 
+                type="monotone" 
+                dataKey="inZone" 
+                stroke="#10b981" 
+                strokeWidth={2}
+                name="В зоне"
+                dot={{ r: 4 }}
+              />
+              <Line 
+                type="monotone" 
+                dataKey="outZone" 
+                stroke="#ef4444" 
+                strokeWidth={2}
+                name="Вне зоны"
+                dot={{ r: 4 }}
+              />
+              <Line 
+                type="monotone" 
+                dataKey="notSent" 
+                stroke="#eab308" 
+                strokeWidth={2}
+                name="Не отправлено"
+                dot={{ r: 4 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-96 flex items-center justify-center text-gray-500">
+            Нет данных для отображения
+          </div>
+        )}
+      </div>
+
+      {/* Фильтры для списка */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="flex flex-wrap gap-4 items-center">
+          <div className="flex items-center space-x-2">
+            <label className="text-sm font-medium text-gray-700">Статус:</label>
+            <div className="flex space-x-2">
+              <button
+                onClick={() => setFilter('all')}
+                className={`px-4 py-2 rounded-md text-sm font-medium ${
+                  filter === 'all'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Все
+              </button>
+              <button
+                onClick={() => setFilter('success')}
+                className={`px-4 py-2 rounded-md text-sm font-medium ${
+                  filter === 'success'
+                    ? 'bg-green-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                ✅ В зоне
+              </button>
+              <button
+                onClick={() => setFilter('failed')}
+                className={`px-4 py-2 rounded-md text-sm font-medium ${
+                  filter === 'failed'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                ❌ Вне зоны
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <label className="text-sm font-medium text-gray-700">Сортировка:</label>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="date">По дате</option>
+              <option value="user">По пользователю</option>
+              <option value="status">По статусу</option>
+            </select>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <label className="text-sm font-medium text-gray-700">Пользователь:</label>
+            <select
+              value={selectedUser}
+              onChange={(e) => setSelectedUser(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="all">Все пользователи</option>
+              {users.map(user => (
+                <option key={user} value={user}>{user}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Список проверок */}
       <div className="bg-white rounded-lg shadow">
-        {filteredCheckIns.length === 0 ? (
+        {sortedCheckIns.length === 0 ? (
           <div className="p-8 text-center text-gray-500">
             Нет записей о проверках
           </div>
         ) : (
           <div className="divide-y divide-gray-200">
-            {filteredCheckIns.map((checkIn) => {
+            {sortedCheckIns.map((checkIn) => {
               const result = checkIn.result;
               const user = checkIn.user;
               
-              if (!result || !user) {
+              if (!user) {
                 return (
                   <div key={checkIn.id} className="p-4">
                     <p className="text-sm text-gray-500">
@@ -106,18 +336,25 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                 );
               }
 
-              const isWithinZone = result.isWithinZone === true;
+              const isWithinZone = result?.isWithinZone === true;
+              const status = checkIn.status;
               
               return (
                 <div key={checkIn.id} className="p-4 hover:bg-gray-50">
                   <div className="flex items-start space-x-4">
                     <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${
-                      isWithinZone ? 'bg-green-100' : 'bg-red-100'
+                      status === 'COMPLETED' 
+                        ? (isWithinZone ? 'bg-green-100' : 'bg-red-100')
+                        : 'bg-yellow-100'
                     }`}>
-                      {isWithinZone ? (
-                        <span className="text-2xl">✅</span>
+                      {status === 'COMPLETED' ? (
+                        isWithinZone ? (
+                          <span className="text-2xl">✅</span>
+                        ) : (
+                          <span className="text-2xl">❌</span>
+                        )
                       ) : (
-                        <span className="text-2xl">❌</span>
+                        <span className="text-2xl">⏳</span>
                       )}
                     </div>
                     
@@ -127,21 +364,27 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                           {user.name}
                         </h3>
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          isWithinZone
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-red-100 text-red-800'
+                          status === 'COMPLETED'
+                            ? (isWithinZone
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800')
+                            : 'bg-yellow-100 text-yellow-800'
                         }`}>
-                          {isWithinZone ? 'В зоне' : 'Вне зоны'}
+                          {status === 'COMPLETED' 
+                            ? (isWithinZone ? 'В зоне' : 'Вне зоны')
+                            : status === 'PENDING' 
+                            ? 'Ожидает'
+                            : 'Пропущена'}
                         </span>
                       </div>
                       
                       <div className="mt-2 space-y-1 text-sm text-gray-600">
-                        {result.locationLat && result.locationLon && (
+                        {result?.locationLat && result?.locationLon && (
                           <p>
                             📍 Координаты: {result.locationLat.toFixed(6)}, {result.locationLon.toFixed(6)}
                           </p>
                         )}
-                        {result.distanceToZone !== null && result.distanceToZone !== undefined && (
+                        {result?.distanceToZone !== null && result?.distanceToZone !== undefined && (
                           <p>
                             📏 Расстояние до зоны: {formatDistance(result.distanceToZone)}
                           </p>
@@ -150,11 +393,11 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                           🕐 {new Date(checkIn.requestedAt).toLocaleString('ru-RU')}
                         </p>
                         <p>
-                          Статус: {checkIn.status === 'COMPLETED' ? '✅ Завершена' : checkIn.status === 'PENDING' ? '⏳ Ожидает' : checkIn.status === 'MISSED' ? '❌ Пропущена' : checkIn.status}
+                          Статус: {status === 'COMPLETED' ? '✅ Завершена' : status === 'PENDING' ? '⏳ Ожидает' : status === 'MISSED' ? '❌ Пропущена' : status}
                         </p>
                       </div>
                       
-                      {(result.photoPath || result.photoFileId) && (
+                      {result && (result.photoPath || result.photoFileId) && (
                         <div className="mt-3">
                           <PhotoDisplay 
                             requestId={checkIn.id} 
@@ -215,8 +458,6 @@ function PhotoDisplay({ requestId, onPhotoClick }) {
         if (response.data.url) {
           setPhotoUrl(response.data.url);
         } else if (response.data.fileId) {
-          // Для Telegram file ID нужно использовать другой подход
-          // Но лучше использовать URL из S3, если он есть
           console.warn('Photo available only as Telegram file ID, S3 URL preferred');
           setError(true);
         }
