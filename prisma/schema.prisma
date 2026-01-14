@@ -56,6 +56,7 @@ model CheckInRequest {
   userId      String
   requestedAt DateTime         @default(now())
   status      CheckInStatus     @default(PENDING)
+  telegramMessageId Int?        // ID сообщения в Telegram для обновления после завершения чекинга
   
   user        User              @relation(fields: [userId], references: [id])
   result      CheckInResult?
