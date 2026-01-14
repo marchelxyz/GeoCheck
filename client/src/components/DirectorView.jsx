@@ -3,7 +3,6 @@ import axios from 'axios';
 import ZoneMap from './ZoneMap';
 import ZoneList from './ZoneList';
 import CheckInDashboard from './CheckInDashboard';
-import EmployeeLocationMap from './EmployeeLocationMap';
 
 export default function DirectorView() {
   const [activeTab, setActiveTab] = useState('map');
@@ -11,7 +10,6 @@ export default function DirectorView() {
   const [checkIns, setCheckIns] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedEmployeeForLocation, setSelectedEmployeeForLocation] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -62,47 +60,9 @@ export default function DirectorView() {
     }
   };
 
-  const handleAddLocationClick = (employee) => {
-    setSelectedEmployeeForLocation(employee);
-  };
-
-  const handleLocationSelected = async (location) => {
-    if (!selectedEmployeeForLocation) return;
-
-    try {
-      const initData = window.Telegram?.WebApp?.initData || '';
-      
-      const response = await axios.post(
-        `/api/employees/${selectedEmployeeForLocation.id}/location`,
-        {
-          latitude: location.latitude,
-          longitude: location.longitude
-        },
-        {
-          headers: { 'x-telegram-init-data': initData }
-        }
-      );
-
-      const status = response.data.isWithinZone 
-        ? '✅ Геолокация добавлена! Сотрудник в рабочей зоне.' 
-        : `❌ Геолокация добавлена! Сотрудник вне рабочей зоны (${Math.round(response.data.distanceToZone || 0)}м от ближайшей зоны)`;
-      
-      alert(status);
-      setSelectedEmployeeForLocation(null);
-      loadData();
-    } catch (error) {
-      console.error('Error adding location:', error);
-      alert(error.response?.data?.error || 'Ошибка добавления геолокации');
-      throw error;
-    }
-  };
-
-  const handleCancelLocationSelection = () => {
-    setSelectedEmployeeForLocation(null);
-  };
-
   const handleZoneCreated = (newZone) => {
     setZones([...zones, newZone]);
+    loadData(); // Reload to get updated employee assignments
   };
 
   const handleZoneDeleted = (zoneId) => {
@@ -180,6 +140,7 @@ export default function DirectorView() {
         {activeTab === 'map' && (
           <ZoneMap
             zones={zones}
+            employees={employees}
             onZoneCreated={handleZoneCreated}
             onZoneDeleted={handleZoneDeleted}
           />
@@ -201,33 +162,38 @@ export default function DirectorView() {
               </div>
             ) : (
               <div className="space-y-3">
-                {employees.map((employee) => (
-                  <div
-                    key={employee.id}
-                    className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50"
-                  >
-                    <div>
-                      <p className="font-medium text-gray-800">{employee.name}</p>
-                      <p className="text-sm text-gray-500">
-                        Зарегистрирован: {new Date(employee.createdAt).toLocaleDateString('ru-RU')}
-                      </p>
+                {employees.map((employee) => {
+                  const employeeZones = zones.filter(zone => 
+                    zone.employees?.some(ze => ze.user?.id === employee.id)
+                  );
+                  
+                  return (
+                    <div
+                      key={employee.id}
+                      className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50"
+                    >
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-800">{employee.name}</p>
+                        <p className="text-sm text-gray-500">
+                          Зарегистрирован: {new Date(employee.createdAt).toLocaleDateString('ru-RU')}
+                        </p>
+                        {employeeZones.length > 0 && (
+                          <p className="text-sm text-blue-600 mt-1">
+                            Назначено зон: {employeeZones.length}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleRequestCheckIn(employee.id)}
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                        >
+                          Отправить проверку
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleAddLocationClick(employee)}
-                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors"
-                      >
-                        📍 Добавить ГЕО
-                      </button>
-                      <button
-                        onClick={() => handleRequestCheckIn(employee.id)}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
-                      >
-                        Отправить проверку
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -236,14 +202,6 @@ export default function DirectorView() {
           <CheckInDashboard checkIns={checkIns} />
         )}
       </div>
-
-      {selectedEmployeeForLocation && (
-        <EmployeeLocationMap
-          employeeName={selectedEmployeeForLocation.name}
-          onLocationSelected={handleLocationSelected}
-          onCancel={handleCancelLocationSelection}
-        />
-      )}
     </div>
   );
 }
