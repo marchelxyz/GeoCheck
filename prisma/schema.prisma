@@ -12,6 +12,7 @@ model User {
   telegramId    String           @unique
   name          String?
   role          UserRole         @default(EMPLOYEE)
+  checkInsEnabled Boolean        @default(true)
   createdAt     DateTime         @default(now())
   
   zones         ZoneEmployee[]
