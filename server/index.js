@@ -402,6 +402,49 @@ async function checkLocationInZones(lat, lon, userId) {
   };
 }
 
+// Функция для отправки уведомлений директорам
+async function notifyDirectors(message, employeeName = null) {
+  try {
+    const directors = await prisma.user.findMany({
+      where: { 
+        role: 'DIRECTOR',
+        notificationsEnabled: true  // Только директоры с включенными уведомлениями
+      }
+    });
+
+    if (directors.length === 0) {
+      log('INFO', 'NOTIFICATION', 'No directors with notifications enabled found');
+      return;
+    }
+
+    for (const director of directors) {
+      try {
+        await bot.telegram.sendMessage(
+          director.telegramId,
+          message
+        );
+        log('INFO', 'NOTIFICATION', 'Notification sent to director', {
+          directorId: director.id,
+          directorTelegramId: director.telegramId,
+          employeeName
+        });
+      } catch (error) {
+        log('ERROR', 'NOTIFICATION', 'Error sending notification to director', {
+          directorId: director.id,
+          directorTelegramId: director.telegramId,
+          error: error.message,
+          stack: error.stack
+        });
+      }
+    }
+  } catch (error) {
+    log('ERROR', 'NOTIFICATION', 'Error in notifyDirectors function', {
+      error: error.message,
+      stack: error.stack
+    });
+  }
+}
+
 // API Routes
 
 // Register employee (only through web app)
@@ -543,6 +586,109 @@ app.get('/api/user/role', verifyTelegramWebApp, async (req, res) => {
       requestId: req.requestId,
       telegramId: req.telegramUser?.id,
       error: error.message
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get director settings (Director only)
+app.get('/api/director/settings', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    
+    log('INFO', 'DIRECTOR', 'Get director settings request', {
+      requestId: req.requestId,
+      telegramId: id
+    });
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) },
+      select: {
+        notificationsEnabled: true,
+        weeklyZoneReminderEnabled: true
+      }
+    });
+
+    if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'DIRECTOR', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: user?.role
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    res.json({
+      notificationsEnabled: user.notificationsEnabled ?? true,
+      weeklyZoneReminderEnabled: user.weeklyZoneReminderEnabled ?? true
+    });
+  } catch (error) {
+    log('ERROR', 'DIRECTOR', 'Error getting director settings', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update director settings (Director only)
+app.put('/api/director/settings', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { notificationsEnabled, weeklyZoneReminderEnabled } = req.body;
+    
+    log('INFO', 'DIRECTOR', 'Update director settings request', {
+      requestId: req.requestId,
+      telegramId: id,
+      notificationsEnabled,
+      weeklyZoneReminderEnabled
+    });
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      log('WARN', 'DIRECTOR', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: director?.role
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const updateData = {};
+    if (notificationsEnabled !== undefined) {
+      updateData.notificationsEnabled = notificationsEnabled;
+    }
+    if (weeklyZoneReminderEnabled !== undefined) {
+      updateData.weeklyZoneReminderEnabled = weeklyZoneReminderEnabled;
+    }
+
+    const updatedDirector = await prisma.user.update({
+      where: { telegramId: String(id) },
+      data: updateData
+    });
+
+    log('INFO', 'DIRECTOR', 'Director settings updated', {
+      requestId: req.requestId,
+      directorId: director.id,
+      notificationsEnabled: updatedDirector.notificationsEnabled,
+      weeklyZoneReminderEnabled: updatedDirector.weeklyZoneReminderEnabled
+    });
+
+    res.json({
+      notificationsEnabled: updatedDirector.notificationsEnabled,
+      weeklyZoneReminderEnabled: updatedDirector.weeklyZoneReminderEnabled
+    });
+  } catch (error) {
+    log('ERROR', 'DIRECTOR', 'Error updating director settings', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
     });
     res.status(500).json({ error: error.message });
   }
@@ -1282,6 +1428,15 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
       });
     }
 
+    // Уведомляем директора, если сотрудник вне зоны
+    if (!locationCheck.isWithinZone) {
+      await notifyDirectors(
+        `⚠️ Сотрудник ${user.name} выполнил чекинг вне рабочей зоны.\n` +
+        `Расстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`,
+        user.name
+      );
+    }
+
     res.json({
       success: true,
       isWithinZone: locationCheck.isWithinZone,
@@ -1654,6 +1809,13 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
         where: { id: pendingRequest.id },
         data: { status: 'MISSED' }
       });
+      
+      // Уведомляем директора о пропущенном чекинге
+      await notifyDirectors(
+        `❌ Сотрудник ${employee.name} не отправил чекинг вовремя.\n` +
+        `Запрос был отменен из-за нового запроса.`,
+        employee.name
+      );
     }
 
     const checkInRequest = await prisma.checkInRequest.create({
@@ -1990,6 +2152,15 @@ bot.on('location', async (ctx) => {
     distanceToZone: locationCheck.distanceToZone
   });
 
+  // Уведомляем директора, если сотрудник вне зоны
+  if (!locationCheck.isWithinZone) {
+    await notifyDirectors(
+      `⚠️ Сотрудник ${user.name} выполнил чекинг вне рабочей зоны.\\n` +
+      `Расстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`,
+      user.name
+    );
+  }
+
   const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
   await ctx.reply(`${status}\\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
 });
@@ -2060,6 +2231,66 @@ bot.on('photo', async (ctx) => {
     log('WARN', 'BOT', 'No pending request for photo', {
       telegramId: userId,
       userId: user.id
+    });
+  }
+});
+
+// Cron job for checking missed check-ins and notifying directors
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    log('INFO', 'CRON', 'Checking for missed check-ins', {});
+    
+    // Находим все PENDING запросы старше 30 минут
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const missedRequests = await prisma.checkInRequest.findMany({
+      where: {
+        status: 'PENDING',
+        requestedAt: {
+          lt: thirtyMinutesAgo
+        }
+      },
+      include: {
+        user: {
+          select: {
+            name: true,
+            telegramId: true
+          }
+        }
+      }
+    });
+
+    if (missedRequests.length === 0) {
+      log('INFO', 'CRON', 'No missed check-ins found', {});
+      return;
+    }
+
+    log('INFO', 'CRON', 'Found missed check-ins', {
+      count: missedRequests.length
+    });
+
+    for (const request of missedRequests) {
+      // Обновляем статус на MISSED
+      await prisma.checkInRequest.update({
+        where: { id: request.id },
+        data: { status: 'MISSED' }
+      });
+
+      // Уведомляем директоров
+      await notifyDirectors(
+        `❌ Сотрудник ${request.user.name} не отправил чекинг вовремя.\n` +
+        `Запрос был отправлен ${new Date(request.requestedAt).toLocaleString('ru-RU')}`,
+        request.user.name
+      );
+
+      log('INFO', 'CRON', 'Missed check-in processed', {
+        requestId: request.id,
+        employeeName: request.user.name
+      });
+    }
+  } catch (error) {
+    log('ERROR', 'CRON', 'Error in missed check-ins cron job', {
+      error: error.message,
+      stack: error.stack
     });
   }
 });
@@ -2184,6 +2415,73 @@ cron.schedule('*/30 * * * *', async () => {
     employeeId: randomEmployee.id,
     checkInRequestId: checkInRequest.id
   });
+});
+
+// Cron job for weekly zone reminder (every Monday at 9:00 AM)
+cron.schedule('0 9 * * 1', async () => {
+  try {
+    log('INFO', 'CRON', 'Weekly zone reminder cron job started', {});
+    
+    const directors = await prisma.user.findMany({
+      where: { 
+        role: 'DIRECTOR',
+        weeklyZoneReminderEnabled: true  // Только директоры с включенным напоминанием
+      }
+    });
+
+    if (directors.length === 0) {
+      log('INFO', 'CRON', 'No directors with weekly reminder enabled found', {});
+      return;
+    }
+
+    // Получаем список сотрудников без зон
+    const employees = await prisma.user.findMany({
+      where: { role: 'EMPLOYEE' },
+      include: {
+        zones: true
+      }
+    });
+
+    const employeesWithoutZones = employees.filter(emp => emp.zones.length === 0);
+
+    if (employeesWithoutZones.length === 0) {
+      log('INFO', 'CRON', 'All employees have zones assigned', {});
+      return;
+    }
+
+    const employeeNames = employeesWithoutZones.map(emp => emp.name).join(', ');
+
+    for (const director of directors) {
+      try {
+        await bot.telegram.sendMessage(
+          director.telegramId,
+          `📅 Напоминание: начало новой недели!\\n\\n` +
+          `Пожалуйста, проверьте и проставьте зоны для командированных сотрудников.\\n\\n` +
+          `Сотрудники без зон: ${employeeNames || 'Нет'}`,
+          Markup.inlineKeyboard([
+            [Markup.button.webApp('Открыть админ панель', WEB_APP_URL)]
+          ])
+        );
+        log('INFO', 'CRON', 'Weekly zone reminder sent to director', {
+          directorId: director.id,
+          directorTelegramId: director.telegramId,
+          employeesWithoutZones: employeesWithoutZones.length
+        });
+      } catch (error) {
+        log('ERROR', 'CRON', 'Error sending weekly reminder to director', {
+          directorId: director.id,
+          directorTelegramId: director.telegramId,
+          error: error.message,
+          stack: error.stack
+        });
+      }
+    }
+  } catch (error) {
+    log('ERROR', 'CRON', 'Error in weekly zone reminder cron job', {
+      error: error.message,
+      stack: error.stack
+    });
+  }
 });
 
 // Cron job for cleaning up old photos (older than 6 months)
