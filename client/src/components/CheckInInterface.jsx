@@ -43,7 +43,6 @@ export default function CheckInInterface({ requestId, onComplete }) {
           setDistanceToZone(response.data.distanceToZone);
 
           if (response.data.isWithinZone) {
-            // Показываем уведомление через Telegram WebApp
             if (window.Telegram?.WebApp) {
               window.Telegram.WebApp.showAlert('✅ Вы в рабочей зоне!');
             }
@@ -72,83 +71,65 @@ export default function CheckInInterface({ requestId, onComplete }) {
   };
 
   const handleSendPhoto = async () => {
-    // Создаем скрытый input для камеры
+    // Согласно документации Telegram Mini Apps, используем стандартный HTML5 input с capture
+    // Это работает лучше всего в Telegram WebView
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.capture = 'environment'; // Используем заднюю камеру
+    // Используем capture для открытия камеры напрямую
+    // 'environment' - задняя камера, 'user' - передняя
+    input.capture = 'environment';
+    input.style.display = 'none';
 
     input.onchange = async (e) => {
       const file = e.target.files[0];
-      if (!file) return;
+      if (!file) {
+        setLoading(false);
+        return;
+      }
 
       setLoading(true);
       setPhotoError(null);
 
       try {
-        // Отправляем фото через Telegram Bot API
-        // Сначала получаем file_id через бота
+        const initData = getTelegramInitData();
         const formData = new FormData();
         formData.append('photo', file);
 
-        // Используем Telegram Bot API для загрузки фото
-        // Но нам нужен file_id, поэтому отправляем через наш API
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          try {
-            // Отправляем фото как base64 или через Telegram Bot API
-            // Для простоты, используем Telegram WebApp для отправки фото боту
-            // Но лучше отправить через наш API
-            
-            // Временное решение: отправляем через Telegram WebApp
-            if (window.Telegram?.WebApp) {
-              // Telegram WebApp не поддерживает прямую отправку файлов
-              // Нужно использовать Telegram Bot API через наш сервер
-              // Для этого создадим endpoint который принимает файл и отправляет его боту
-              
-              const initData = getTelegramInitData();
-              const formDataToSend = new FormData();
-              formDataToSend.append('photo', file);
-
-              const response = await axios.post(
-                '/api/check-in/photo',
-                formDataToSend,
-                {
-                  headers: {
-                    'x-telegram-init-data': initData,
-                    'Content-Type': 'multipart/form-data'
-                  }
-                }
-              );
-
-              setPhotoSent(true);
-              if (window.Telegram?.WebApp) {
-                window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
-              }
-
-              // Проверяем, все ли отправлено
-              if (locationSent && photoSent) {
-                if (onComplete) {
-                  onComplete();
-                }
-              }
+        const response = await axios.post(
+          '/api/check-in/photo',
+          formData,
+          {
+            headers: {
+              'x-telegram-init-data': initData,
+              'Content-Type': 'multipart/form-data'
             }
-          } catch (error) {
-            console.error('Error sending photo:', error);
-            setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
-          } finally {
-            setLoading(false);
           }
-        };
-        reader.readAsDataURL(file);
+        );
+
+        setPhotoSent(true);
+        if (window.Telegram?.WebApp) {
+          window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
+        }
+
+        // Проверяем, все ли отправлено
+        if (locationSent && photoSent) {
+          if (onComplete) {
+            onComplete();
+          }
+        }
       } catch (error) {
-        console.error('Error preparing photo:', error);
-        setPhotoError('Ошибка подготовки фото');
+        console.error('Error sending photo:', error);
+        setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
+      } finally {
         setLoading(false);
       }
     };
 
+    // Добавляем input в DOM, кликаем и удаляем
+    document.body.appendChild(input);
     input.click();
+    document.body.removeChild(input);
   };
 
   return (
