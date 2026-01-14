@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import DirectorView from './components/DirectorView';
 import EmployeeView from './components/EmployeeView';
+import CheckInInterface from './components/CheckInInterface';
 import Loading from './components/Loading';
 
 function App() {
+  const [searchParams] = useSearchParams();
+  const requestId = searchParams.get('requestId');
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -132,6 +136,19 @@ function App() {
 
   if (loading) {
     return <Loading />;
+  }
+
+  // Если есть requestId в URL, показываем интерфейс проверки
+  if (requestId && user) {
+    return (
+      <CheckInInterface 
+        requestId={requestId}
+        onComplete={() => {
+          // После завершения проверки можно вернуться к основному интерфейсу
+          window.location.href = '/';
+        }}
+      />
+    );
   }
 
   if (!user) {
