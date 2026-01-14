@@ -8,17 +8,62 @@ function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     initTelegramWebApp();
   }, []);
 
+  const getTelegramInitData = () => {
+    if (!window.Telegram?.WebApp) {
+      return null;
+    }
+    
+    // Пробуем получить initData разными способами
+    const webApp = window.Telegram.WebApp;
+    
+    // Основной способ - через initData
+    if (webApp.initData) {
+      return webApp.initData;
+    }
+    
+    // Альтернативный способ - через initDataUnsafe (если доступен)
+    if (webApp.initDataUnsafe) {
+      // Если initDataUnsafe есть, но initData нет, нужно сформировать строку вручную
+      // Но лучше использовать готовый initData, если он есть
+      console.warn('initDataUnsafe available but initData is missing');
+    }
+    
+    return null;
+  };
+
   const initTelegramWebApp = async () => {
+    // Ждем загрузки Telegram Web App SDK
+    if (!window.Telegram) {
+      // Пробуем подождать немного
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (!window.Telegram?.WebApp) {
+        console.warn('Telegram WebApp not available, using mock data');
+        setUser({ id: 'dev', role: 'DIRECTOR' });
+        setRole('DIRECTOR');
+        setLoading(false);
+        return;
+      }
+    }
+
     if (window.Telegram?.WebApp) {
       window.Telegram.WebApp.ready();
       window.Telegram.WebApp.expand();
       
-      const initData = window.Telegram.WebApp.initData;
+      const initData = getTelegramInitData();
+      
+      if (!initData) {
+        console.error('Telegram initData is not available');
+        setError('Не удалось получить данные Telegram. Пожалуйста, откройте приложение через Telegram бота.');
+        setLoading(false);
+        return;
+      }
       
       try {
         const userResponse = await axios.post('/api/user', {}, {
@@ -35,6 +80,7 @@ function App() {
           setRole(null);
         } else {
           console.error('Error initializing user:', error);
+          setError(error.response?.data?.error || 'Ошибка инициализации пользователя');
         }
       } finally {
         setLoading(false);
@@ -48,11 +94,26 @@ function App() {
   };
 
   const handleRegister = async () => {
-    if (!window.Telegram?.WebApp) return;
+    if (!window.Telegram?.WebApp) {
+      alert('Telegram WebApp недоступен. Пожалуйста, откройте приложение через Telegram бота.');
+      return;
+    }
     
-    const initData = window.Telegram.WebApp.initData;
+    const initData = getTelegramInitData();
+    
+    if (!initData) {
+      alert('Не удалось получить данные Telegram. Пожалуйста, перезагрузите страницу или откройте приложение через Telegram бота.');
+      console.error('initData is missing:', {
+        hasTelegram: !!window.Telegram,
+        hasWebApp: !!window.Telegram?.WebApp,
+        initData: window.Telegram?.WebApp?.initData,
+        initDataUnsafe: window.Telegram?.WebApp?.initDataUnsafe
+      });
+      return;
+    }
     
     try {
+      setError(null);
       const userResponse = await axios.post('/api/user/register', {}, {
         headers: {
           'x-telegram-init-data': initData
@@ -63,7 +124,9 @@ function App() {
       setRole(userResponse.data.role);
     } catch (error) {
       console.error('Error registering user:', error);
-      alert(error.response?.data?.error || 'Ошибка регистрации');
+      const errorMessage = error.response?.data?.error || 'Ошибка регистрации';
+      setError(errorMessage);
+      alert(errorMessage);
     }
   };
 
@@ -85,9 +148,16 @@ function App() {
             <p className="text-gray-600">Для начала работы необходимо зарегистрироваться</p>
           </div>
           
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-600">{error}</p>
+            </div>
+          )}
+          
           <button
             onClick={handleRegister}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors"
+            disabled={!window.Telegram?.WebApp}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors"
           >
             Зарегистрироваться
           </button>
@@ -95,6 +165,12 @@ function App() {
           <p className="text-xs text-gray-500 text-center mt-4">
             Первый зарегистрированный пользователь получит права директора
           </p>
+          
+          {!window.Telegram?.WebApp && (
+            <p className="text-xs text-red-500 text-center mt-2">
+              ⚠️ Приложение должно быть открыто через Telegram бота
+            </p>
+          )}
         </div>
       </div>
     );
