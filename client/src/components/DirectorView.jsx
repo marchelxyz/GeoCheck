@@ -10,9 +10,14 @@ export default function DirectorView() {
   const [checkIns, setCheckIns] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [directorSettings, setDirectorSettings] = useState({
+    notificationsEnabled: true,
+    weeklyZoneReminderEnabled: true,
+  });
 
   useEffect(() => {
     loadData();
+    loadDirectorSettings();
   }, []);
 
   const loadData = async () => {
@@ -38,6 +43,43 @@ export default function DirectorView() {
       console.error('Error loading data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadDirectorSettings = async () => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.get('/api/director/settings', {
+        headers: { 'x-telegram-init-data': initData }
+      });
+      setDirectorSettings(response.data);
+    } catch (error) {
+      console.error('Error loading director settings:', error);
+      // Fallback to default settings on error
+      setDirectorSettings({
+        notificationsEnabled: true,
+        weeklyZoneReminderEnabled: true,
+      });
+    }
+  };
+
+  const handleToggleDirectorSetting = async (settingName) => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const newValue = !directorSettings[settingName];
+      
+      const response = await axios.put('/api/director/settings', 
+        { [settingName]: newValue },
+        {
+          headers: { 'x-telegram-init-data': initData }
+        }
+      );
+      
+      setDirectorSettings(response.data);
+      alert(`Настройка "${settingName}" успешно обновлена.`);
+    } catch (error) {
+      console.error(`Error toggling ${settingName}:`, error);
+      alert(error.response?.data?.error || `Ошибка обновления настройки "${settingName}"`);
     }
   };
 
@@ -182,6 +224,16 @@ export default function DirectorView() {
             >
               📊 Проверки
             </button>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === 'settings'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
+            >
+              ⚙️ Настройки
+            </button>
           </div>
         </div>
       </div>
@@ -279,6 +331,45 @@ export default function DirectorView() {
         )}
         {activeTab === 'dashboard' && (
           <CheckInDashboard checkIns={checkIns} />
+        )}
+        {activeTab === 'settings' && (
+          <div className="bg-white rounded-lg shadow-sm p-6">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">Настройки уведомлений директора</h2>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
+                <div>
+                  <p className="font-medium text-gray-800">Уведомления о чекингах</p>
+                  <p className="text-sm text-gray-500">Получать уведомления, если сотрудник не отправил чекинг или находится вне зоны.</p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    value="" 
+                    className="sr-only peer" 
+                    checked={directorSettings.notificationsEnabled}
+                    onChange={() => handleToggleDirectorSetting('notificationsEnabled')}
+                  />
+                  <div className="w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+              <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
+                <div>
+                  <p className="font-medium text-gray-800">Еженедельное напоминание о зонах</p>
+                  <p className="text-sm text-gray-500">Получать напоминание каждый понедельник о необходимости проставить зоны для командированных сотрудников.</p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    value="" 
+                    className="sr-only peer" 
+                    checked={directorSettings.weeklyZoneReminderEnabled}
+                    onChange={() => handleToggleDirectorSetting('weeklyZoneReminderEnabled')}
+                  />
+                  <div className="w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>
