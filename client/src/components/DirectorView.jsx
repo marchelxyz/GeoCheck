@@ -10,6 +10,7 @@ export default function DirectorView() {
   const [checkIns, setCheckIns] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [addingLocationFor, setAddingLocationFor] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -58,6 +59,56 @@ export default function DirectorView() {
       console.error('Error requesting check-in:', error);
       alert(error.response?.data?.error || 'Ошибка отправки запроса');
     }
+  };
+
+  const handleAddLocation = async (employeeId) => {
+    if (!navigator.geolocation) {
+      alert('Геолокация не поддерживается вашим браузером');
+      return;
+    }
+
+    setAddingLocationFor(employeeId);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const initData = window.Telegram?.WebApp?.initData || '';
+          
+          const response = await axios.post(
+            `/api/employees/${employeeId}/location`,
+            {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude
+            },
+            {
+              headers: { 'x-telegram-init-data': initData }
+            }
+          );
+
+          const status = response.data.isWithinZone 
+            ? '✅ Геолокация добавлена! Сотрудник в рабочей зоне.' 
+            : `❌ Геолокация добавлена! Сотрудник вне рабочей зоны (${Math.round(response.data.distanceToZone || 0)}м от ближайшей зоны)`;
+          
+          alert(status);
+          loadData();
+        } catch (error) {
+          console.error('Error adding location:', error);
+          alert(error.response?.data?.error || 'Ошибка добавления геолокации');
+        } finally {
+          setAddingLocationFor(null);
+        }
+      },
+      (error) => {
+        console.error('Error getting location:', error);
+        alert('Ошибка получения геолокации: ' + error.message);
+        setAddingLocationFor(null);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      }
+    );
   };
 
   const handleZoneCreated = (newZone) => {
@@ -171,12 +222,25 @@ export default function DirectorView() {
                         Зарегистрирован: {new Date(employee.createdAt).toLocaleDateString('ru-RU')}
                       </p>
                     </div>
-                    <button
-                      onClick={() => handleRequestCheckIn(employee.id)}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
-                    >
-                      Отправить проверку
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleAddLocation(employee.id)}
+                        disabled={addingLocationFor === employee.id}
+                        className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                          addingLocationFor === employee.id
+                            ? 'bg-gray-400 text-white cursor-not-allowed'
+                            : 'bg-green-600 hover:bg-green-700 text-white'
+                        }`}
+                      >
+                        {addingLocationFor === employee.id ? '⏳ Получение...' : '📍 Добавить гео'}
+                      </button>
+                      <button
+                        onClick={() => handleRequestCheckIn(employee.id)}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                      >
+                        Отправить проверку
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
