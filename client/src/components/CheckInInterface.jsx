@@ -13,7 +13,6 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const fileInputRef = useRef(null);
 
   const getTelegramInitData = () => {
     return window.Telegram?.WebApp?.initData || '';
