@@ -60,6 +60,56 @@ export default function DirectorView() {
     }
   };
 
+  const handleToggleCheckIns = async (employeeId) => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      
+      const response = await axios.put(`/api/employees/${employeeId}/toggle-checkins`, 
+        {},
+        {
+          headers: { 'x-telegram-init-data': initData }
+        }
+      );
+      
+      // Update local state
+      setEmployees(employees.map(emp => 
+        emp.id === employeeId 
+          ? { ...emp, checkInsEnabled: response.data.checkInsEnabled }
+          : emp
+      ));
+      
+      const status = response.data.checkInsEnabled ? 'включены' : 'отключены';
+      alert(`Ежедневные проверки для сотрудника ${status}`);
+    } catch (error) {
+      console.error('Error toggling check-ins:', error);
+      alert(error.response?.data?.error || 'Ошибка изменения статуса проверок');
+    }
+  };
+
+  const handleDeleteEmployee = async (employeeId) => {
+    const employee = employees.find(emp => emp.id === employeeId);
+    const employeeName = employee?.name || 'сотрудника';
+    
+    if (!confirm(`Вы уверены, что хотите удалить сотрудника "${employeeName}"? Это действие нельзя отменить.`)) {
+      return;
+    }
+
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      
+      await axios.delete(`/api/employees/${employeeId}`, {
+        headers: { 'x-telegram-init-data': initData }
+      });
+      
+      // Remove from local state
+      setEmployees(employees.filter(emp => emp.id !== employeeId));
+      alert(`Сотрудник "${employeeName}" успешно удален`);
+    } catch (error) {
+      console.error('Error deleting employee:', error);
+      alert(error.response?.data?.error || 'Ошибка удаления сотрудника');
+    }
+  };
+
   const handleZoneCreated = (newZone) => {
     setZones([...zones, newZone]);
     loadData(); // Reload to get updated employee assignments
@@ -173,7 +223,18 @@ export default function DirectorView() {
                       className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50"
                     >
                       <div className="flex-1">
-                        <p className="font-medium text-gray-800">{employee.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-gray-800">{employee.name}</p>
+                          {employee.checkInsEnabled !== undefined && (
+                            <span className={`px-2 py-1 text-xs font-medium rounded ${
+                              employee.checkInsEnabled
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}>
+                              {employee.checkInsEnabled ? '✓ Проверки включены' : '✗ Проверки отключены'}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-sm text-gray-500">
                           Зарегистрирован: {new Date(employee.createdAt).toLocaleDateString('ru-RU')}
                         </p>
@@ -185,10 +246,28 @@ export default function DirectorView() {
                       </div>
                       <div className="flex gap-2">
                         <button
+                          onClick={() => handleToggleCheckIns(employee.id)}
+                          className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                            employee.checkInsEnabled
+                              ? 'bg-yellow-600 hover:bg-yellow-700 text-white'
+                              : 'bg-green-600 hover:bg-green-700 text-white'
+                          }`}
+                          title={employee.checkInsEnabled ? 'Отключить ежедневные проверки (отпуск и т.д.)' : 'Включить ежедневные проверки'}
+                        >
+                          {employee.checkInsEnabled ? '⏸ Отключить проверки' : '▶ Включить проверки'}
+                        </button>
+                        <button
                           onClick={() => handleRequestCheckIn(employee.id)}
                           className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
                         >
                           Отправить проверку
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEmployee(employee.id)}
+                          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
+                          title="Удалить сотрудника (уволен)"
+                        >
+                          🗑 Удалить
                         </button>
                       </div>
                     </div>
