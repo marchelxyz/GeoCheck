@@ -84,12 +84,12 @@ export default function CheckInInterface({ requestId, onComplete }) {
     setPhotoError(null);
     
     try {
-      // Пробуем разные варианты конфигурации камеры для максимальной совместимости
+      // Используем фронтальную камеру для мобильных устройств
       const constraints = {
         video: {
-          facingMode: { ideal: 'environment' }, // Приоритет задней камере
-          width: { ideal: 1920, min: 640 },
-          height: { ideal: 1080, min: 480 }
+          facingMode: { ideal: 'user' }, // Фронтальная камера
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 }
         }
       };
 
@@ -100,25 +100,68 @@ export default function CheckInInterface({ requestId, onComplete }) {
       } catch (err) {
         // Если не получилось, пробуем упрощенную конфигурацию
         console.warn('Failed with ideal constraints, trying simplified:', err);
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment'
-          }
-        });
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: 'user'
+            }
+          });
+        } catch (err2) {
+          // Если и это не сработало, пробуем без указания камеры
+          console.warn('Failed with user camera, trying any camera:', err2);
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true
+          });
+        }
       }
       
+      if (!stream) {
+        throw new Error('Не удалось получить поток камеры');
+      }
+
       streamRef.current = stream;
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        
+        // Ждем, пока видео элемент будет готов
+        await new Promise((resolve, reject) => {
+          const video = videoRef.current;
+          
+          const onLoadedMetadata = () => {
+            video.removeEventListener('loadedmetadata', onLoadedMetadata);
+            video.removeEventListener('error', onError);
+            resolve();
+          };
+          
+          const onError = (err) => {
+            video.removeEventListener('loadedmetadata', onLoadedMetadata);
+            video.removeEventListener('error', onError);
+            reject(err);
+          };
+          
+          video.addEventListener('loadedmetadata', onLoadedMetadata);
+          video.addEventListener('error', onError);
+          
+          // Пытаемся запустить воспроизведение
+          video.play().catch(reject);
+        });
+        
         setCameraActive(true);
         setLoading(false);
+      } else {
+        throw new Error('Video элемент не найден');
       }
     } catch (err) {
       console.error('Error accessing camera with MediaDevices API:', err);
       setPhotoError('Не удалось получить доступ к камере. Пожалуйста, разрешите доступ к камере в настройках браузера.');
       setLoading(false);
+      
+      // Останавливаем поток, если он был создан
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
       
       // Не используем fallback на input, так как он открывает галерею в Telegram
       // Вместо этого показываем сообщение пользователю
@@ -138,6 +181,9 @@ export default function CheckInInterface({ requestId, onComplete }) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
     setCameraActive(false);
   };
 
@@ -153,7 +199,15 @@ export default function CheckInInterface({ requestId, onComplete }) {
     // Ждем, пока видео будет готово
     if (video.readyState < 2) {
       await new Promise((resolve) => {
-        video.onloadedmetadata = resolve;
+        if (video.readyState >= 2) {
+          resolve();
+          return;
+        }
+        const onLoadedMetadata = () => {
+          video.removeEventListener('loadedmetadata', onLoadedMetadata);
+          resolve();
+        };
+        video.addEventListener('loadedmetadata', onLoadedMetadata);
       });
     }
 
