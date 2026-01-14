@@ -3,6 +3,7 @@ import axios from 'axios';
 import ZoneMap from './ZoneMap';
 import ZoneList from './ZoneList';
 import CheckInDashboard from './CheckInDashboard';
+import EmployeeLocationMap from './EmployeeLocationMap';
 
 export default function DirectorView() {
   const [activeTab, setActiveTab] = useState('map');
@@ -10,7 +11,7 @@ export default function DirectorView() {
   const [checkIns, setCheckIns] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [addingLocationFor, setAddingLocationFor] = useState(null);
+  const [selectedEmployeeForLocation, setSelectedEmployeeForLocation] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -61,54 +62,43 @@ export default function DirectorView() {
     }
   };
 
-  const handleAddLocation = async (employeeId) => {
-    if (!navigator.geolocation) {
-      alert('Геолокация не поддерживается вашим браузером');
-      return;
-    }
+  const handleAddLocationClick = (employee) => {
+    setSelectedEmployeeForLocation(employee);
+  };
 
-    setAddingLocationFor(employeeId);
+  const handleLocationSelected = async (location) => {
+    if (!selectedEmployeeForLocation) return;
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const initData = window.Telegram?.WebApp?.initData || '';
-          
-          const response = await axios.post(
-            `/api/employees/${employeeId}/location`,
-            {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude
-            },
-            {
-              headers: { 'x-telegram-init-data': initData }
-            }
-          );
-
-          const status = response.data.isWithinZone 
-            ? '✅ Геолокация добавлена! Сотрудник в рабочей зоне.' 
-            : `❌ Геолокация добавлена! Сотрудник вне рабочей зоны (${Math.round(response.data.distanceToZone || 0)}м от ближайшей зоны)`;
-          
-          alert(status);
-          loadData();
-        } catch (error) {
-          console.error('Error adding location:', error);
-          alert(error.response?.data?.error || 'Ошибка добавления геолокации');
-        } finally {
-          setAddingLocationFor(null);
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      
+      const response = await axios.post(
+        `/api/employees/${selectedEmployeeForLocation.id}/location`,
+        {
+          latitude: location.latitude,
+          longitude: location.longitude
+        },
+        {
+          headers: { 'x-telegram-init-data': initData }
         }
-      },
-      (error) => {
-        console.error('Error getting location:', error);
-        alert('Ошибка получения геолокации: ' + error.message);
-        setAddingLocationFor(null);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
-      }
-    );
+      );
+
+      const status = response.data.isWithinZone 
+        ? '✅ Геолокация добавлена! Сотрудник в рабочей зоне.' 
+        : `❌ Геолокация добавлена! Сотрудник вне рабочей зоны (${Math.round(response.data.distanceToZone || 0)}м от ближайшей зоны)`;
+      
+      alert(status);
+      setSelectedEmployeeForLocation(null);
+      loadData();
+    } catch (error) {
+      console.error('Error adding location:', error);
+      alert(error.response?.data?.error || 'Ошибка добавления геолокации');
+      throw error;
+    }
+  };
+
+  const handleCancelLocationSelection = () => {
+    setSelectedEmployeeForLocation(null);
   };
 
   const handleZoneCreated = (newZone) => {
@@ -224,15 +214,10 @@ export default function DirectorView() {
                     </div>
                     <div className="flex gap-2">
                       <button
-                        onClick={() => handleAddLocation(employee.id)}
-                        disabled={addingLocationFor === employee.id}
-                        className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-                          addingLocationFor === employee.id
-                            ? 'bg-gray-400 text-white cursor-not-allowed'
-                            : 'bg-green-600 hover:bg-green-700 text-white'
-                        }`}
+                        onClick={() => handleAddLocationClick(employee)}
+                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors"
                       >
-                        {addingLocationFor === employee.id ? '⏳ Получение...' : '📍 Добавить гео'}
+                        📍 Добавить ГЕО
                       </button>
                       <button
                         onClick={() => handleRequestCheckIn(employee.id)}
@@ -251,6 +236,14 @@ export default function DirectorView() {
           <CheckInDashboard checkIns={checkIns} />
         )}
       </div>
+
+      {selectedEmployeeForLocation && (
+        <EmployeeLocationMap
+          employeeName={selectedEmployeeForLocation.name}
+          onLocationSelected={handleLocationSelected}
+          onCancel={handleCancelLocationSelection}
+        />
+      )}
     </div>
   );
 }

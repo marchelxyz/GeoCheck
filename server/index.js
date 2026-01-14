@@ -24,6 +24,28 @@ const prisma = new PrismaClient({
 // Configure multer for file uploads
 const upload = multer({ dest: '/tmp/' });
 
+// Helper function for structured logging
+function log(level, category, message, data = {}) {
+  const timestamp = new Date().toISOString();
+  const logEntry = {
+    timestamp,
+    level,
+    category,
+    message,
+    ...data
+  };
+  
+  const logString = `[${timestamp}] [${level}] [${category}] ${message}${Object.keys(data).length > 0 ? ' | ' + JSON.stringify(data) : ''}`;
+  
+  if (level === 'ERROR') {
+    console.error(logString);
+  } else if (level === 'WARN') {
+    console.warn(logString);
+  } else {
+    console.log(logString);
+  }
+}
+
 // Helper function to mask sensitive data in DATABASE_URL for logging
 function maskDatabaseUrl(url) {
   if (!url) return 'NOT SET';
@@ -40,39 +62,40 @@ function maskDatabaseUrl(url) {
 
 // Run database migrations
 async function runMigrations(maxRetries = 15, delay = 3000) {
+  log('INFO', 'MIGRATION', 'Starting database migrations', { maxRetries, delay });
+  
   // Проверяем наличие DATABASE_URL
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
-    console.error('❌ DATABASE_URL environment variable is not set!');
-    console.error('Please set DATABASE_URL in Railway environment variables.');
+    log('ERROR', 'MIGRATION', 'DATABASE_URL environment variable is not set!');
     return false;
   }
 
-  console.log('📋 Database connection info:');
-  console.log(`   URL (masked): ${maskDatabaseUrl(databaseUrl)}`);
+  log('INFO', 'MIGRATION', 'Database connection info', {
+    url: maskDatabaseUrl(databaseUrl)
+  });
   
   // Проверяем формат DATABASE_URL
   try {
     const urlObj = new URL(databaseUrl);
-    console.log(`   Host: ${urlObj.hostname}`);
-    console.log(`   Port: ${urlObj.port || '5432'}`);
-    console.log(`   Database: ${urlObj.pathname.slice(1)}`);
+    log('INFO', 'MIGRATION', 'Database URL parsed', {
+      host: urlObj.hostname,
+      port: urlObj.port || '5432',
+      database: urlObj.pathname.slice(1)
+    });
   } catch (error) {
-    console.error('❌ Invalid DATABASE_URL format:', error.message);
+    log('ERROR', 'MIGRATION', 'Invalid DATABASE_URL format', { error: error.message });
     return false;
   }
 
   // Сначала проверяем подключение к БД с retry логикой
-  console.log('🔄 Checking database connection before applying schema...');
+  log('INFO', 'MIGRATION', 'Checking database connection before applying schema');
   let dbConnected = false;
-  // Увеличиваем количество попыток до 20 и начальную задержку
   const maxConnectionAttempts = 20;
-  const initialDelay = 3000; // Начальная задержка 3 секунды
+  const initialDelay = 3000;
 
   for (let attempt = 1; attempt <= maxConnectionAttempts; attempt++) {
     try {
-      // Используем prisma.$queryRaw для проверки подключения
-      // Добавляем таймаут для запроса
       await Promise.race([
         prisma.$queryRaw`SELECT 1`,
         new Promise((_, reject) => 
@@ -80,59 +103,34 @@ async function runMigrations(maxRetries = 15, delay = 3000) {
         )
       ]);
       dbConnected = true;
-      console.log(`✅ Database connection established on attempt ${attempt}`);
+      log('INFO', 'MIGRATION', 'Database connection established', { attempt });
       break;
     } catch (error) {
       const isLastAttempt = attempt === maxConnectionAttempts;
       const errorInfo = {
         code: error.code || error.errorCode || 'UNKNOWN',
         message: error.message,
-        meta: error.meta || null,
+        attempt,
+        maxAttempts: maxConnectionAttempts
       };
 
       if (isLastAttempt) {
-        console.error('❌ Ошибка подключения к БД после всех попыток:');
-        console.error(`   Код ошибки: ${errorInfo.code}`);
-        console.error(`   Сообщение: ${errorInfo.message}`);
-        if (errorInfo.meta) {
-          console.error(`   Метаданные:`, JSON.stringify(errorInfo.meta, null, 2));
-        }
-        
-        // Дополнительная диагностика
-        if (error.message.includes('Can\'t reach database server') || 
-            error.message.includes('Connection timeout') ||
-            error.code === 'P1001') {
-          console.error('');
-          console.error('💡 Возможные причины:');
-          console.error('   1. База данных не запущена или не готова (может потребоваться время на инициализацию)');
-          console.error('   2. База данных не подключена к сервису в Railway');
-          console.error('   3. Неверный DATABASE_URL (проверьте переменные окружения в Railway)');
-          console.error('   4. Проблемы с сетью между сервисами');
-          console.error('   5. Railway перезапускает контейнеры слишком часто');
-          console.error('');
-          console.error('🔧 Рекомендации:');
-          console.error('   1. Убедитесь, что PostgreSQL сервис запущен в Railway');
-          console.error('   2. Проверьте, что база данных подключена к вашему сервису');
-          console.error('   3. Убедитесь, что DATABASE_URL установлен в переменных окружения');
-          console.error('   4. Проверьте логи PostgreSQL сервиса в Railway');
-          console.error('   5. Подождите несколько минут - база данных может инициализироваться');
-          console.error('   6. Проверьте настройки restart policy в Railway');
-        }
-        
-        console.error('Полная ошибка:', error);
+        log('ERROR', 'MIGRATION', 'Failed to connect to database after all attempts', errorInfo);
         return false;
       } else {
-        // Экспоненциальная задержка с начальной задержкой: 3, 6, 9 секунд...
         const waitTime = initialDelay + (attempt - 1) * 3000;
-        console.warn(`⚠️  Попытка ${attempt}/${maxConnectionAttempts} не удалась. Повтор через ${waitTime}мс...`);
-        console.warn(`   Ошибка: ${errorInfo.message.substring(0, 100)}${errorInfo.message.length > 100 ? '...' : ''}`);
+        log('WARN', 'MIGRATION', `Connection attempt failed, retrying`, {
+          attempt,
+          waitTime,
+          error: error.message.substring(0, 100)
+        });
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
   }
 
   if (!dbConnected) {
-    console.error('❌ Failed to connect to database. Cannot apply schema.');
+    log('ERROR', 'MIGRATION', 'Failed to connect to database. Cannot apply schema.');
     return false;
   }
 
@@ -142,7 +140,7 @@ async function runMigrations(maxRetries = 15, delay = 3000) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       const result = await new Promise((resolve) => {
-        console.log(`🔄 Applying database schema (attempt ${i + 1}/${maxRetries})...`);
+        log('INFO', 'MIGRATION', 'Applying database schema', { attempt: i + 1, maxRetries });
         const process = spawn('npx', ['prisma', 'db', 'push', '--schema=../prisma/schema.prisma', '--accept-data-loss'], {
           stdio: 'inherit',
           cwd: '/app/server',
@@ -151,16 +149,16 @@ async function runMigrations(maxRetries = 15, delay = 3000) {
 
         process.on('close', (code) => {
           if (code === 0) {
-            console.log('✅ Database schema applied successfully');
+            log('INFO', 'MIGRATION', 'Database schema applied successfully');
             resolve(true);
           } else {
-            console.error(`❌ Schema application attempt ${i + 1}/${maxRetries} failed with code ${code}`);
+            log('ERROR', 'MIGRATION', 'Schema application failed', { attempt: i + 1, exitCode: code });
             resolve(false);
           }
         });
 
         process.on('error', (error) => {
-          console.error(`❌ Error applying schema (attempt ${i + 1}/${maxRetries}):`, error.message);
+          log('ERROR', 'MIGRATION', 'Error applying schema', { attempt: i + 1, error: error.message });
           resolve(false);
         });
       });
@@ -170,13 +168,12 @@ async function runMigrations(maxRetries = 15, delay = 3000) {
       }
 
       if (i < maxRetries - 1) {
-        console.log(`⏳ Retrying schema application in ${delay}ms...`);
+        log('INFO', 'MIGRATION', 'Retrying schema application', { delay });
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     } catch (error) {
-      console.error(`❌ Error in migration attempt ${i + 1}/${maxRetries}:`, error.message);
+      log('ERROR', 'MIGRATION', 'Error in migration attempt', { attempt: i + 1, error: error.message });
       if (i < maxRetries - 1) {
-        console.log(`⏳ Retrying schema application in ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -190,7 +187,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const PORT = process.env.PORT || 3000;
 
 if (!BOT_TOKEN) {
-  console.error('BOT_TOKEN is required!');
+  log('ERROR', 'STARTUP', 'BOT_TOKEN is required!');
   process.exit(1);
 }
 
@@ -198,6 +195,35 @@ const bot = new Telegraf(BOT_TOKEN);
 
 // Track if bot is running
 let botRunning = false;
+
+// Middleware для логирования всех HTTP запросов
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  const requestId = crypto.randomBytes(8).toString('hex');
+  req.requestId = requestId;
+
+  log('INFO', 'HTTP', 'Incoming request', {
+    requestId,
+    method: req.method,
+    path: req.path,
+    ip: req.ip,
+    userAgent: req.get('user-agent')?.substring(0, 100)
+  });
+
+  // Логируем ответ после завершения
+  res.on('finish', () => {
+    const duration = Date.now() - startTime;
+    log('INFO', 'HTTP', 'Request completed', {
+      requestId,
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      duration: `${duration}ms`
+    });
+  });
+
+  next();
+});
 
 // Middleware
 app.use(cors());
@@ -210,19 +236,15 @@ function verifyTelegramWebAppData(initData) {
     const urlParams = new URLSearchParams(initData);
     const hash = urlParams.get('hash');
     if (!hash) {
-      console.error('Hash not found in initData');
+      log('ERROR', 'AUTH', 'Hash not found in initData');
       return false;
     }
     urlParams.delete('hash');
 
-    // Формируем строку для проверки согласно документации Telegram
-    // Все пары ключ=значение сортируем и соединяем через \n
-
-
     const dataCheckString = Array.from(urlParams.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => `${key}=${value}`)
-      .join('\n'); // ИСПРАВЛЕНО: используем одинарный \n (не двойной обратный слэш)
+      .join('\n');
 
     const secretKey = crypto
       .createHmac('sha256', 'WebAppData')
@@ -235,17 +257,16 @@ function verifyTelegramWebAppData(initData) {
       .digest('hex');
 
     if (calculatedHash !== hash) {
-      console.error('Hash mismatch:', {
+      log('ERROR', 'AUTH', 'Hash mismatch', {
         calculated: calculatedHash.substring(0, 10) + '...',
         received: hash.substring(0, 10) + '...',
-        dataCheckStringLength: dataCheckString.length,
-        dataCheckStringPreview: dataCheckString.substring(0, 100)
+        dataCheckStringLength: dataCheckString.length
       });
     }
 
     return calculatedHash === hash;
   } catch (error) {
-    console.error('Error verifying Telegram data:', error);
+    log('ERROR', 'AUTH', 'Error verifying Telegram data', { error: error.message });
     return false;
   }
 }
@@ -260,20 +281,25 @@ function parseInitData(initData) {
 
 // Middleware to verify Telegram Web App
 function verifyTelegramWebApp(req, res, next) {
-  // Проверяем заголовок в разных регистрах (Express может нормализовать заголовки)
   const initData = req.headers['x-telegram-init-data'] || 
                    req.headers['X-Telegram-Init-Data'] ||
                    req.headers['X-TELEGRAM-INIT-DATA'];
   
   if (!initData) {
-    console.error('Missing Telegram init data header. Available headers:', Object.keys(req.headers).filter(h => h.toLowerCase().includes('telegram')));
+    log('WARN', 'AUTH', 'Missing Telegram init data header', {
+      requestId: req.requestId,
+      availableHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('telegram'))
+    });
     return res.status(401).json({ 
       error: 'Missing Telegram init data. Пожалуйста, откройте приложение через Telegram бота.' 
     });
   }
 
   if (!verifyTelegramWebAppData(initData)) {
-    console.error('Invalid Telegram init data. InitData length:', initData.length);
+    log('WARN', 'AUTH', 'Invalid Telegram init data', {
+      requestId: req.requestId,
+      initDataLength: initData.length
+    });
     return res.status(401).json({ 
       error: 'Invalid Telegram init data. Пожалуйста, перезагрузите страницу.' 
     });
@@ -281,13 +307,18 @@ function verifyTelegramWebApp(req, res, next) {
 
   const user = parseInitData(initData);
   if (!user) {
-    console.error('Failed to parse user data from initData');
+    log('WARN', 'AUTH', 'Failed to parse user data from initData', { requestId: req.requestId });
     return res.status(401).json({ 
       error: 'Invalid user data. Пожалуйста, перезагрузите страницу.' 
     });
   }
 
   req.telegramUser = user;
+  log('INFO', 'AUTH', 'Telegram user authenticated', {
+    requestId: req.requestId,
+    userId: user.id,
+    username: user.username
+  });
   next();
 }
 
@@ -306,7 +337,8 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 
 // Check if location is within employee's zones
 async function checkLocationInZones(lat, lon, userId) {
-  // Получаем зоны конкретного сотрудника
+  log('INFO', 'LOCATION', 'Checking location in zones', { userId, lat, lon });
+  
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: {
@@ -319,6 +351,7 @@ async function checkLocationInZones(lat, lon, userId) {
   });
 
   if (!user || !user.zones || user.zones.length === 0) {
+    log('INFO', 'LOCATION', 'User has no zones assigned', { userId });
     return { 
       isWithinZone: false, 
       distanceToZone: null,
@@ -327,10 +360,21 @@ async function checkLocationInZones(lat, lon, userId) {
   }
 
   const employeeZones = user.zones.map(ze => ze.zone);
+  log('INFO', 'LOCATION', 'Checking against employee zones', {
+    userId,
+    zoneCount: employeeZones.length,
+    zoneIds: employeeZones.map(z => z.id)
+  });
 
   for (const zone of employeeZones) {
     const distance = calculateDistance(lat, lon, zone.latitude, zone.longitude);
     if (distance <= zone.radius) {
+      log('INFO', 'LOCATION', 'Location is within zone', {
+        userId,
+        zoneId: zone.id,
+        zoneName: zone.name,
+        distance: Math.round(distance)
+      });
       return { isWithinZone: true, distanceToZone: distance, zoneId: zone.id };
     }
   }
@@ -344,6 +388,12 @@ async function checkLocationInZones(lat, lon, userId) {
   const closest = distances.reduce((min, current) => 
     current.distance < min.distance ? current : min
   , distances[0] || { distance: Infinity });
+
+  log('INFO', 'LOCATION', 'Location is outside all zones', {
+    userId,
+    closestZoneId: closest.zone?.id,
+    closestDistance: Math.round(closest.distance || 0)
+  });
 
   return { 
     isWithinZone: false, 
@@ -360,26 +410,53 @@ app.post('/api/user/register', verifyTelegramWebApp, async (req, res) => {
     const { id, first_name, last_name, username } = req.telegramUser;
     const name = `${first_name || ''} ${last_name || ''}`.trim() || username || `User ${id}`;
 
+    log('INFO', 'USER', 'User registration attempt', {
+      requestId: req.requestId,
+      telegramId: id,
+      name
+    });
+
     let user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (user) {
+      log('WARN', 'USER', 'User already registered', {
+        requestId: req.requestId,
+        telegramId: id,
+        userId: user.id
+      });
       return res.status(400).json({ error: 'User already registered' });
     }
 
     const userCount = await prisma.user.count();
+    const role = userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE';
+    
     user = await prisma.user.create({
       data: {
         telegramId: String(id),
         name,
-        role: userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE'
+        role
       }
+    });
+
+    log('INFO', 'USER', 'User registered successfully', {
+      requestId: req.requestId,
+      userId: user.id,
+      telegramId: id,
+      name,
+      role,
+      isFirstUser: userCount === 0
     });
 
     res.json(user);
   } catch (error) {
-    console.error('Error in /api/user/register:', error);
+    log('ERROR', 'USER', 'Error in user registration', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -390,11 +467,20 @@ app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
     const { id, first_name, last_name, username } = req.telegramUser;
     const name = `${first_name || ''} ${last_name || ''}`.trim() || username || `User ${id}`;
 
+    log('INFO', 'USER', 'User update/get request', {
+      requestId: req.requestId,
+      telegramId: id
+    });
+
     let user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user) {
+      log('WARN', 'USER', 'User not found', {
+        requestId: req.requestId,
+        telegramId: id
+      });
       return res.status(404).json({ error: 'User not registered. Please register first.' });
     }
 
@@ -403,9 +489,21 @@ app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
       data: { name }
     });
 
+    log('INFO', 'USER', 'User updated successfully', {
+      requestId: req.requestId,
+      userId: user.id,
+      telegramId: id,
+      name
+    });
+
     res.json(user);
   } catch (error) {
-    console.error('Error in /api/user:', error);
+    log('ERROR', 'USER', 'Error in user update', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -414,18 +512,38 @@ app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
 app.get('/api/user/role', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
+    
+    log('INFO', 'USER', 'Get user role request', {
+      requestId: req.requestId,
+      telegramId: id
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) },
       select: { role: true }
     });
 
     if (!user) {
+      log('WARN', 'USER', 'User not found for role check', {
+        requestId: req.requestId,
+        telegramId: id
+      });
       return res.status(404).json({ error: 'User not found' });
     }
 
+    log('INFO', 'USER', 'User role retrieved', {
+      requestId: req.requestId,
+      telegramId: id,
+      role: user.role
+    });
+
     res.json({ role: user.role });
   } catch (error) {
-    console.error('Error in /api/user/role:', error);
+    log('ERROR', 'USER', 'Error getting user role', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -434,11 +552,22 @@ app.get('/api/user/role', verifyTelegramWebApp, async (req, res) => {
 app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
+    
+    log('INFO', 'EMPLOYEE', 'Get employees list request', {
+      requestId: req.requestId,
+      directorTelegramId: id
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'EMPLOYEE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: user?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -453,9 +582,20 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
 
+    log('INFO', 'EMPLOYEE', 'Employees list retrieved', {
+      requestId: req.requestId,
+      directorId: user.id,
+      employeeCount: employees.length
+    });
+
     res.json(employees);
   } catch (error) {
-    console.error('Error in /api/employees:', error);
+    log('ERROR', 'EMPLOYEE', 'Error getting employees list', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -466,7 +606,16 @@ app.post('/api/admin/claim', verifyTelegramWebApp, async (req, res) => {
     const { password } = req.body;
     const { id } = req.telegramUser;
 
+    log('INFO', 'ADMIN', 'Admin claim attempt', {
+      requestId: req.requestId,
+      telegramId: id
+    });
+
     if (password !== ADMIN_PASSWORD) {
+      log('WARN', 'ADMIN', 'Invalid admin password', {
+        requestId: req.requestId,
+        telegramId: id
+      });
       return res.status(401).json({ error: 'Invalid password' });
     }
 
@@ -475,9 +624,20 @@ app.post('/api/admin/claim', verifyTelegramWebApp, async (req, res) => {
       data: { role: 'DIRECTOR' }
     });
 
+    log('INFO', 'ADMIN', 'Admin role claimed successfully', {
+      requestId: req.requestId,
+      userId: user.id,
+      telegramId: id
+    });
+
     res.json(user);
   } catch (error) {
-    console.error('Error in /api/admin/claim:', error);
+    log('ERROR', 'ADMIN', 'Error claiming admin role', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -486,11 +646,22 @@ app.post('/api/admin/claim', verifyTelegramWebApp, async (req, res) => {
 app.get('/api/zones', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
+    
+    log('INFO', 'ZONE', 'Get zones list request', {
+      requestId: req.requestId,
+      telegramId: id
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'ZONE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: user?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -510,9 +681,20 @@ app.get('/api/zones', verifyTelegramWebApp, async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
 
+    log('INFO', 'ZONE', 'Zones list retrieved', {
+      requestId: req.requestId,
+      directorId: user.id,
+      zoneCount: zones.length
+    });
+
     res.json(zones);
   } catch (error) {
-    console.error('Error in /api/zones:', error);
+    log('ERROR', 'ZONE', 'Error getting zones list', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -521,6 +703,12 @@ app.get('/api/zones', verifyTelegramWebApp, async (req, res) => {
 app.get('/api/zones/my', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
+    
+    log('INFO', 'ZONE', 'Get employee zones request', {
+      requestId: req.requestId,
+      telegramId: id
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) },
       include: {
@@ -533,13 +721,29 @@ app.get('/api/zones/my', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (!user) {
+      log('WARN', 'ZONE', 'User not found', {
+        requestId: req.requestId,
+        telegramId: id
+      });
       return res.status(404).json({ error: 'User not found' });
     }
 
     const zones = user.zones.map(ze => ze.zone);
+    
+    log('INFO', 'ZONE', 'Employee zones retrieved', {
+      requestId: req.requestId,
+      userId: user.id,
+      zoneCount: zones.length
+    });
+
     res.json(zones);
   } catch (error) {
-    console.error('Error in /api/zones/my:', error);
+    log('ERROR', 'ZONE', 'Error getting employee zones', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -549,32 +753,82 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
     const { id } = req.telegramUser;
     const { name, latitude, longitude, radius, employeeIds } = req.body;
 
+    log('INFO', 'ZONE', 'Create zone request', {
+      requestId: req.requestId,
+      telegramId: id,
+      zoneName: name,
+      latitude,
+      longitude,
+      radius,
+      providedEmployeeIds: employeeIds
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'ZONE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: user?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Check if there are any employees registered
     const employeeCount = await prisma.user.count({
       where: { role: 'EMPLOYEE' }
     });
 
     if (employeeCount === 0) {
+      log('WARN', 'ZONE', 'Cannot create zone - no employees', {
+        requestId: req.requestId,
+        directorId: user.id
+      });
       return res.status(400).json({ error: 'Cannot create zones. No employees registered yet.' });
     }
 
     if (!name || latitude === undefined || longitude === undefined || !radius) {
+      log('WARN', 'ZONE', 'Missing required fields', {
+        requestId: req.requestId,
+        directorId: user.id,
+        providedFields: { name: !!name, latitude, longitude, radius }
+      });
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Если employeeIds не передан или пустой, автоматически назначаем всех сотрудников
+    let finalEmployeeIds = employeeIds;
     if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
+      log('INFO', 'ZONE', 'Auto-assigning all employees to zone', {
+        requestId: req.requestId,
+        directorId: user.id
+      });
+      const allEmployees = await prisma.user.findMany({
+        where: { role: 'EMPLOYEE' },
+        select: { id: true }
+      });
+      finalEmployeeIds = allEmployees.map(emp => emp.id);
+    }
+
+    if (finalEmployeeIds.length === 0) {
+      log('WARN', 'ZONE', 'No employees to assign to zone', {
+        requestId: req.requestId,
+        directorId: user.id
+      });
       return res.status(400).json({ error: 'At least one employee must be assigned to the zone' });
     }
 
-    // Create zone
+    log('INFO', 'ZONE', 'Creating zone', {
+      requestId: req.requestId,
+      directorId: user.id,
+      zoneName: name,
+      latitude,
+      longitude,
+      radius,
+      employeeCount: finalEmployeeIds.length
+    });
+
     const zone = await prisma.zone.create({
       data: {
         name,
@@ -583,7 +837,7 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
         radius: parseFloat(radius),
         createdBy: user.id,
         employees: {
-          create: employeeIds.map(empId => ({
+          create: finalEmployeeIds.map(empId => ({
             userId: empId
           }))
         }
@@ -599,9 +853,22 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
       }
     });
 
+    log('INFO', 'ZONE', 'Zone created successfully', {
+      requestId: req.requestId,
+      zoneId: zone.id,
+      zoneName: zone.name,
+      directorId: user.id,
+      employeeCount: zone.employees.length
+    });
+
     res.json(zone);
   } catch (error) {
-    console.error('Error in /api/zones POST:', error);
+    log('ERROR', 'ZONE', 'Error creating zone', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -613,24 +880,46 @@ app.put('/api/zones/:id/employees', verifyTelegramWebApp, async (req, res) => {
     const { id: zoneId } = req.params;
     const { employeeIds } = req.body;
 
+    log('INFO', 'ZONE', 'Update zone employees request', {
+      requestId: req.requestId,
+      zoneId,
+      telegramId: userId,
+      employeeIds
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(userId) }
     });
 
     if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'ZONE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: userId,
+        role: user?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
     if (!employeeIds || !Array.isArray(employeeIds)) {
+      log('WARN', 'ZONE', 'Invalid employeeIds format', {
+        requestId: req.requestId,
+        zoneId,
+        providedEmployeeIds: employeeIds
+      });
       return res.status(400).json({ error: 'employeeIds must be an array' });
     }
 
-    // Delete existing employee assignments
+    log('INFO', 'ZONE', 'Updating zone employees', {
+      requestId: req.requestId,
+      zoneId,
+      directorId: user.id,
+      newEmployeeCount: employeeIds.length
+    });
+
     await prisma.zoneEmployee.deleteMany({
       where: { zoneId }
     });
 
-    // Create new assignments
     if (employeeIds.length > 0) {
       await prisma.zoneEmployee.createMany({
         data: employeeIds.map(empId => ({
@@ -653,9 +942,21 @@ app.put('/api/zones/:id/employees', verifyTelegramWebApp, async (req, res) => {
       }
     });
 
+    log('INFO', 'ZONE', 'Zone employees updated successfully', {
+      requestId: req.requestId,
+      zoneId,
+      employeeCount: zone.employees.length
+    });
+
     res.json(zone);
   } catch (error) {
-    console.error('Error in /api/zones/:id/employees:', error);
+    log('ERROR', 'ZONE', 'Error updating zone employees', {
+      requestId: req.requestId,
+      zoneId: req.params.id,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -665,11 +966,22 @@ app.delete('/api/zones/:id', verifyTelegramWebApp, async (req, res) => {
     const { id: userId } = req.telegramUser;
     const { id: zoneId } = req.params;
 
+    log('INFO', 'ZONE', 'Delete zone request', {
+      requestId: req.requestId,
+      zoneId,
+      telegramId: userId
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(userId) }
     });
 
     if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'ZONE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: userId,
+        role: user?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -677,9 +989,21 @@ app.delete('/api/zones/:id', verifyTelegramWebApp, async (req, res) => {
       where: { id: zoneId }
     });
 
+    log('INFO', 'ZONE', 'Zone deleted successfully', {
+      requestId: req.requestId,
+      zoneId,
+      directorId: user.id
+    });
+
     res.json({ success: true });
   } catch (error) {
-    console.error('Error in /api/zones DELETE:', error);
+    log('ERROR', 'ZONE', 'Error deleting zone', {
+      requestId: req.requestId,
+      zoneId: req.params.id,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -688,11 +1012,21 @@ app.delete('/api/zones/:id', verifyTelegramWebApp, async (req, res) => {
 app.get('/api/check-in/pending', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
+    
+    log('INFO', 'CHECKIN', 'Get pending check-in request', {
+      requestId: req.requestId,
+      telegramId: id
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user) {
+      log('WARN', 'CHECKIN', 'User not found', {
+        requestId: req.requestId,
+        telegramId: id
+      });
       return res.status(404).json({ error: 'User not found' });
     }
 
@@ -705,12 +1039,27 @@ app.get('/api/check-in/pending', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (!pendingRequest) {
+      log('INFO', 'CHECKIN', 'No pending check-in request found', {
+        requestId: req.requestId,
+        userId: user.id
+      });
       return res.status(404).json({ error: 'No pending check-in request' });
     }
 
+    log('INFO', 'CHECKIN', 'Pending check-in request found', {
+      requestId: req.requestId,
+      userId: user.id,
+      checkInRequestId: pendingRequest.id
+    });
+
     res.json(pendingRequest);
   } catch (error) {
-    console.error('Error in /api/check-in/pending:', error);
+    log('ERROR', 'CHECKIN', 'Error getting pending check-in', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -721,11 +1070,22 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
     const { id } = req.telegramUser;
     const { latitude, longitude } = req.body;
 
+    log('INFO', 'CHECKIN', 'Submit location for check-in', {
+      requestId: req.requestId,
+      telegramId: id,
+      latitude,
+      longitude
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user) {
+      log('WARN', 'CHECKIN', 'User not found', {
+        requestId: req.requestId,
+        telegramId: id
+      });
       return res.status(404).json({ error: 'User not found' });
     }
 
@@ -738,19 +1098,20 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (!pendingRequest) {
+      log('WARN', 'CHECKIN', 'No pending check-in request', {
+        requestId: req.requestId,
+        userId: user.id
+      });
       return res.status(404).json({ error: 'No pending check-in request' });
     }
 
-    // Check location against employee's zones
     const locationCheck = await checkLocationInZones(latitude, longitude, user.id);
 
-    // Update request status
     await prisma.checkInRequest.update({
       where: { id: pendingRequest.id },
       data: { status: 'COMPLETED' }
     });
 
-    // Create or update result
     const existingResult = await prisma.checkInResult.findUnique({
       where: { requestId: pendingRequest.id }
     });
@@ -765,6 +1126,13 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
           distanceToZone: locationCheck.distanceToZone
         }
       });
+      log('INFO', 'CHECKIN', 'Check-in result updated', {
+        requestId: req.requestId,
+        userId: user.id,
+        checkInRequestId: pendingRequest.id,
+        isWithinZone: locationCheck.isWithinZone,
+        distanceToZone: locationCheck.distanceToZone
+      });
     } else {
       await prisma.checkInResult.create({
         data: {
@@ -775,6 +1143,13 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
           distanceToZone: locationCheck.distanceToZone
         }
       });
+      log('INFO', 'CHECKIN', 'Check-in result created', {
+        requestId: req.requestId,
+        userId: user.id,
+        checkInRequestId: pendingRequest.id,
+        isWithinZone: locationCheck.isWithinZone,
+        distanceToZone: locationCheck.distanceToZone
+      });
     }
 
     res.json({
@@ -783,7 +1158,12 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
       distanceToZone: locationCheck.distanceToZone
     });
   } catch (error) {
-    console.error('Error in /api/check-in/location:', error);
+    log('ERROR', 'CHECKIN', 'Error submitting location', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -794,11 +1174,21 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
     const { id } = req.telegramUser;
     const { photoFileId } = req.body;
 
+    log('INFO', 'CHECKIN', 'Submit photo for check-in', {
+      requestId: req.requestId,
+      telegramId: id,
+      hasPhotoFileId: !!photoFileId
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user) {
+      log('WARN', 'CHECKIN', 'User not found', {
+        requestId: req.requestId,
+        telegramId: id
+      });
       return res.status(404).json({ error: 'User not found' });
     }
 
@@ -811,10 +1201,13 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (!pendingRequest) {
+      log('WARN', 'CHECKIN', 'No pending check-in request for photo', {
+        requestId: req.requestId,
+        userId: user.id
+      });
       return res.status(404).json({ error: 'No pending check-in request' });
     }
 
-    // Update result with photo
     const result = await prisma.checkInResult.findUnique({
       where: { requestId: pendingRequest.id }
     });
@@ -824,8 +1217,13 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
         where: { id: result.id },
         data: { photoFileId }
       });
+      log('INFO', 'CHECKIN', 'Photo added to existing check-in result', {
+        requestId: req.requestId,
+        userId: user.id,
+        checkInRequestId: pendingRequest.id,
+        resultId: result.id
+      });
     } else {
-      // Create result if it doesn't exist (location not sent yet)
       await prisma.checkInResult.create({
         data: {
           requestId: pendingRequest.id,
@@ -835,11 +1233,21 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
           photoFileId
         }
       });
+      log('INFO', 'CHECKIN', 'Check-in result created with photo', {
+        requestId: req.requestId,
+        userId: user.id,
+        checkInRequestId: pendingRequest.id
+      });
     }
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Error in /api/check-in/photo:', error);
+    log('ERROR', 'CHECKIN', 'Error submitting photo', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -850,11 +1258,22 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
     const { id } = req.telegramUser;
     const { id: requestId } = req.params;
 
+    log('INFO', 'CHECKIN', 'Get photo URL request', {
+      requestId: req.requestId,
+      checkInRequestId: requestId,
+      telegramId: id
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'CHECKIN', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: user?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -872,26 +1291,42 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (!result) {
+      log('WARN', 'CHECKIN', 'Check-in result not found', {
+        requestId: req.requestId,
+        checkInRequestId: requestId
+      });
       return res.status(404).json({ error: 'Check-in result not found' });
     }
 
-    // Если есть photoPath в S3, получаем URL
     if (result.photoPath) {
       try {
-        const photoUrl = await getPhotoUrl(result.photoPath, 3600); // URL действителен 1 час
+        const photoUrl = await getPhotoUrl(result.photoPath, 3600);
+        log('INFO', 'CHECKIN', 'Photo URL retrieved from S3', {
+          requestId: req.requestId,
+          checkInRequestId: requestId,
+          employeeName: result.request.user.name
+        });
         return res.json({ 
           url: photoUrl,
           requestId: result.requestId,
           employeeName: result.request.user.name
         });
       } catch (error) {
-        console.error('Error getting photo URL from S3:', error);
+        log('ERROR', 'CHECKIN', 'Error getting photo URL from S3', {
+          requestId: req.requestId,
+          checkInRequestId: requestId,
+          error: error.message
+        });
         return res.status(500).json({ error: 'Failed to get photo URL from S3' });
       }
     }
 
-    // Если есть только photoFileId (старый формат), возвращаем его
     if (result.photoFileId) {
+      log('INFO', 'CHECKIN', 'Photo file ID returned (legacy format)', {
+        requestId: req.requestId,
+        checkInRequestId: requestId,
+        employeeName: result.request.user.name
+      });
       return res.json({ 
         fileId: result.photoFileId,
         requestId: result.requestId,
@@ -900,9 +1335,19 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
       });
     }
 
+    log('WARN', 'CHECKIN', 'Photo not found for check-in', {
+      requestId: req.requestId,
+      checkInRequestId: requestId
+    });
     return res.status(404).json({ error: 'Photo not found for this check-in' });
   } catch (error) {
-    console.error('Error in /api/check-ins/:id/photo:', error);
+    log('ERROR', 'CHECKIN', 'Error getting photo URL', {
+      requestId: req.requestId,
+      checkInRequestId: req.params.id,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -911,15 +1356,26 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
 app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
+    const { status, startDate, endDate } = req.query;
+
+    log('INFO', 'CHECKIN', 'Get check-ins list request', {
+      requestId: req.requestId,
+      telegramId: id,
+      filters: { status, startDate, endDate }
+    });
+
     const user = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'CHECKIN', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: user?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
-
-    const { status, startDate, endDate } = req.query;
 
     const where = {};
     if (status) {
@@ -943,9 +1399,21 @@ app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
       take: 100
     });
 
+    log('INFO', 'CHECKIN', 'Check-ins list retrieved', {
+      requestId: req.requestId,
+      directorId: user.id,
+      checkInCount: checkIns.length,
+      filters: { status, startDate, endDate }
+    });
+
     res.json(checkIns);
   } catch (error) {
-    console.error('Error in /api/check-ins:', error);
+    log('ERROR', 'CHECKIN', 'Error getting check-ins list', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -956,15 +1424,30 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     const { id } = req.telegramUser;
     const { employeeId } = req.body;
 
+    log('INFO', 'CHECKIN', 'Request check-in for employee', {
+      requestId: req.requestId,
+      directorTelegramId: id,
+      employeeId
+    });
+
     const director = await prisma.user.findUnique({
       where: { telegramId: String(id) }
     });
 
     if (!director || director.role !== 'DIRECTOR') {
+      log('WARN', 'CHECKIN', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: director?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
     if (!employeeId) {
+      log('WARN', 'CHECKIN', 'Employee ID is required', {
+        requestId: req.requestId,
+        directorId: director.id
+      });
       return res.status(400).json({ error: 'Employee ID is required' });
     }
 
@@ -973,6 +1456,11 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (!employee || employee.role !== 'EMPLOYEE') {
+      log('WARN', 'CHECKIN', 'Employee not found', {
+        requestId: req.requestId,
+        directorId: director.id,
+        employeeId
+      });
       return res.status(404).json({ error: 'Employee not found' });
     }
 
@@ -984,7 +1472,16 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (pendingRequest) {
-      return res.status(400).json({ error: 'Employee already has a pending check-in request' });
+      log('INFO', 'CHECKIN', 'Cancelling old pending request', {
+        requestId: req.requestId,
+        directorId: director.id,
+        employeeId: employee.id,
+        oldRequestId: pendingRequest.id
+      });
+      await prisma.checkInRequest.update({
+        where: { id: pendingRequest.id },
+        data: { status: 'MISSED' }
+      });
     }
 
     const checkInRequest = await prisma.checkInRequest.create({
@@ -994,7 +1491,14 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       }
     });
 
-    // Send notification with button to check-in interface
+    log('INFO', 'CHECKIN', 'Check-in request created', {
+      requestId: req.requestId,
+      directorId: director.id,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      checkInRequestId: checkInRequest.id
+    });
+
     const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
     try {
       await bot.telegram.sendMessage(
@@ -1004,13 +1508,31 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
           [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
         ])
       );
+      log('INFO', 'BOT', 'Check-in notification sent to employee', {
+        requestId: req.requestId,
+        employeeId: employee.id,
+        employeeTelegramId: employee.telegramId,
+        checkInRequestId: checkInRequest.id
+      });
     } catch (error) {
-      console.error('Error sending check-in notification:', error);
+      log('ERROR', 'BOT', 'Error sending check-in notification', {
+        requestId: req.requestId,
+        employeeId: employee.id,
+        employeeTelegramId: employee.telegramId,
+        error: error.message,
+        stack: error.stack
+      });
     }
 
     res.json(checkInRequest);
   } catch (error) {
-    console.error('Error in /api/check-ins/request:', error);
+    log('ERROR', 'CHECKIN', 'Error requesting check-in', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      employeeId: req.body?.employeeId,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
@@ -1022,15 +1544,34 @@ app.post('/api/employees/:id/location', verifyTelegramWebApp, async (req, res) =
     const { id: employeeId } = req.params;
     const { latitude, longitude } = req.body;
 
+    log('INFO', 'EMPLOYEE', 'Add location for employee', {
+      requestId: req.requestId,
+      directorTelegramId: directorId,
+      employeeId,
+      latitude,
+      longitude
+    });
+
     const director = await prisma.user.findUnique({
       where: { telegramId: String(directorId) }
     });
 
     if (!director || director.role !== 'DIRECTOR') {
+      log('WARN', 'EMPLOYEE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: directorId,
+        role: director?.role
+      });
       return res.status(403).json({ error: 'Access denied' });
     }
 
     if (!latitude || !longitude) {
+      log('WARN', 'EMPLOYEE', 'Missing latitude or longitude', {
+        requestId: req.requestId,
+        directorId: director.id,
+        employeeId,
+        provided: { latitude: !!latitude, longitude: !!longitude }
+      });
       return res.status(400).json({ error: 'Latitude and longitude are required' });
     }
 
@@ -1039,21 +1580,23 @@ app.post('/api/employees/:id/location', verifyTelegramWebApp, async (req, res) =
     });
 
     if (!employee || employee.role !== 'EMPLOYEE') {
+      log('WARN', 'EMPLOYEE', 'Employee not found', {
+        requestId: req.requestId,
+        directorId: director.id,
+        employeeId
+      });
       return res.status(404).json({ error: 'Employee not found' });
     }
 
-    // Create check-in request for employee
     const checkInRequest = await prisma.checkInRequest.create({
       data: {
         userId: employee.id,
-        status: 'COMPLETED' // Сразу помечаем как завершенный, т.к. директор сам отправил гео
+        status: 'COMPLETED'
       }
     });
 
-    // Check location against employee's zones
     const locationCheck = await checkLocationInZones(latitude, longitude, employee.id);
 
-    // Create result with location
     await prisma.checkInResult.create({
       data: {
         requestId: checkInRequest.id,
@@ -1064,6 +1607,16 @@ app.post('/api/employees/:id/location', verifyTelegramWebApp, async (req, res) =
       }
     });
 
+    log('INFO', 'EMPLOYEE', 'Location added for employee', {
+      requestId: req.requestId,
+      directorId: director.id,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      checkInRequestId: checkInRequest.id,
+      isWithinZone: locationCheck.isWithinZone,
+      distanceToZone: locationCheck.distanceToZone
+    });
+
     res.json({
       success: true,
       isWithinZone: locationCheck.isWithinZone,
@@ -1071,13 +1624,23 @@ app.post('/api/employees/:id/location', verifyTelegramWebApp, async (req, res) =
       requestId: checkInRequest.id
     });
   } catch (error) {
-    console.error('Error in /api/employees/:id/location:', error);
+    log('ERROR', 'EMPLOYEE', 'Error adding location for employee', {
+      requestId: req.requestId,
+      directorTelegramId: req.telegramUser?.id,
+      employeeId: req.params.id,
+      error: error.message,
+      stack: error.stack
+    });
     res.status(500).json({ error: error.message });
   }
 });
 
 // Health check
 app.get('/health', (req, res) => {
+  log('INFO', 'HEALTH', 'Health check', {
+    requestId: req.requestId,
+    timestamp: new Date().toISOString()
+  });
   res.json({ status: 'ok' });
 });
 
@@ -1086,12 +1649,20 @@ const WEB_APP_URL = process.env.WEB_APP_URL || `http://localhost:${PORT}`;
 // Bot handlers
 bot.start(async (ctx) => {
   const userId = String(ctx.from.id);
+  
+  log('INFO', 'BOT', 'Bot /start command received', {
+    telegramId: userId,
+    username: ctx.from.username
+  });
 
   const user = await prisma.user.findUnique({
     where: { telegramId: userId }
   });
 
   if (!user) {
+    log('INFO', 'BOT', 'New user started bot - not registered', {
+      telegramId: userId
+    });
     const keyboard = Markup.keyboard([
       [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
     ]).resize();
@@ -1102,6 +1673,13 @@ bot.start(async (ctx) => {
     );
     return;
   }
+
+  log('INFO', 'BOT', 'Registered user started bot', {
+    telegramId: userId,
+    userId: user.id,
+    userName: user.name,
+    role: user.role
+  });
 
   const keyboard = Markup.keyboard([
     [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
@@ -1118,15 +1696,29 @@ bot.start(async (ctx) => {
 bot.command('admin', async (ctx) => {
   const args = ctx.message.text.split(' ');
   const password = args[1];
+  const userId = String(ctx.from.id);
+
+  log('INFO', 'BOT', 'Admin command received', {
+    telegramId: userId,
+    hasPassword: !!password
+  });
 
   if (password !== ADMIN_PASSWORD) {
+    log('WARN', 'BOT', 'Invalid admin password', {
+      telegramId: userId
+    });
     return ctx.reply('❌ Неверный пароль');
   }
 
-  const userId = String(ctx.from.id);
   const user = await prisma.user.update({
     where: { telegramId: userId },
     data: { role: 'DIRECTOR' }
+  });
+
+  log('INFO', 'BOT', 'Admin role granted via command', {
+    telegramId: userId,
+    userId: user.id,
+    userName: user.name
   });
 
   await ctx.reply('✅ Вы получили права директора!');
@@ -1137,12 +1729,20 @@ bot.on('location', async (ctx) => {
   const userId = String(ctx.from.id);
   const location = ctx.message.location;
 
-  // Find pending check-in request
+  log('INFO', 'BOT', 'Location received via bot', {
+    telegramId: userId,
+    latitude: location.latitude,
+    longitude: location.longitude
+  });
+
   const user = await prisma.user.findUnique({
     where: { telegramId: userId }
   });
 
   if (!user) {
+    log('WARN', 'BOT', 'User not found for location', {
+      telegramId: userId
+    });
     return ctx.reply('Пользователь не найден. Отправьте /start');
   }
 
@@ -1155,19 +1755,20 @@ bot.on('location', async (ctx) => {
   });
 
   if (!pendingRequest) {
+    log('WARN', 'BOT', 'No pending request for location', {
+      telegramId: userId,
+      userId: user.id
+    });
     return ctx.reply('Нет активных запросов на проверку');
   }
 
-  // Check location against employee's zones
   const locationCheck = await checkLocationInZones(location.latitude, location.longitude, user.id);
 
-  // Update request status
   await prisma.checkInRequest.update({
     where: { id: pendingRequest.id },
     data: { status: 'COMPLETED' }
   });
 
-  // Create result
   const existingResult = await prisma.checkInResult.findUnique({
     where: { requestId: pendingRequest.id }
   });
@@ -1194,6 +1795,14 @@ bot.on('location', async (ctx) => {
     });
   }
 
+  log('INFO', 'BOT', 'Location processed via bot', {
+    telegramId: userId,
+    userId: user.id,
+    checkInRequestId: pendingRequest.id,
+    isWithinZone: locationCheck.isWithinZone,
+    distanceToZone: locationCheck.distanceToZone
+  });
+
   const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
   await ctx.reply(`${status}\\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
 });
@@ -1203,11 +1812,19 @@ bot.on('photo', async (ctx) => {
   const userId = String(ctx.from.id);
   const photo = ctx.message.photo[ctx.message.photo.length - 1];
 
+  log('INFO', 'BOT', 'Photo received via bot', {
+    telegramId: userId,
+    photoFileId: photo.file_id
+  });
+
   const user = await prisma.user.findUnique({
     where: { telegramId: userId }
   });
 
   if (!user) {
+    log('WARN', 'BOT', 'User not found for photo', {
+      telegramId: userId
+    });
     return ctx.reply('Пользователь не найден. Отправьте /start');
   }
 
@@ -1220,7 +1837,6 @@ bot.on('photo', async (ctx) => {
   });
 
   if (pendingRequest) {
-    // Update result with photo
     const result = await prisma.checkInResult.findUnique({
       where: { requestId: pendingRequest.id }
     });
@@ -1230,9 +1846,13 @@ bot.on('photo', async (ctx) => {
         where: { id: result.id },
         data: { photoFileId: photo.file_id }
       });
-      await ctx.reply('✅ Фото сохранено!');
+      log('INFO', 'BOT', 'Photo added to existing result', {
+        telegramId: userId,
+        userId: user.id,
+        checkInRequestId: pendingRequest.id,
+        resultId: result.id
+      });
     } else {
-      // Create result if it doesn't exist
       await prisma.checkInResult.create({
         data: {
           requestId: pendingRequest.id,
@@ -1242,8 +1862,18 @@ bot.on('photo', async (ctx) => {
           photoFileId: photo.file_id
         }
       });
-      await ctx.reply('✅ Фото сохранено!');
+      log('INFO', 'BOT', 'Check-in result created with photo', {
+        telegramId: userId,
+        userId: user.id,
+        checkInRequestId: pendingRequest.id
+      });
     }
+    await ctx.reply('✅ Фото сохранено!');
+  } else {
+    log('WARN', 'BOT', 'No pending request for photo', {
+      telegramId: userId,
+      userId: user.id
+    });
   }
 });
 
@@ -1252,21 +1882,29 @@ cron.schedule('*/30 * * * *', async () => {
   const now = new Date();
   const hour = now.getHours();
 
-  // Only between 9:00 and 18:00
+  log('INFO', 'CRON', 'Random check-in cron job started', {
+    hour,
+    isWorkingHours: hour >= 9 && hour < 18
+  });
+
   if (hour < 9 || hour >= 18) {
+    log('INFO', 'CRON', 'Outside working hours, skipping', { hour });
     return;
   }
 
-  // Get all employees
   const employees = await prisma.user.findMany({
     where: { role: 'EMPLOYEE' }
   });
 
   if (employees.length === 0) {
+    log('INFO', 'CRON', 'No employees found, skipping', {});
     return;
   }
 
-  // Filter employees who haven't been checked in last 2 hours
+  log('INFO', 'CRON', 'Found employees for check-in', {
+    totalEmployees: employees.length
+  });
+
   const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
   const recentCheckIns = await prisma.checkInRequest.findMany({
     where: {
@@ -1279,14 +1917,25 @@ cron.schedule('*/30 * * * *', async () => {
   const recentUserIds = new Set(recentCheckIns.map(c => c.userId));
   const availableEmployees = employees.filter(e => !recentUserIds.has(e.id));
 
+  log('INFO', 'CRON', 'Filtered available employees', {
+    totalEmployees: employees.length,
+    recentCheckIns: recentCheckIns.length,
+    availableEmployees: availableEmployees.length
+  });
+
   if (availableEmployees.length === 0) {
+    log('INFO', 'CRON', 'No available employees, skipping', {});
     return;
   }
 
-  // Pick random employee
   const randomEmployee = availableEmployees[Math.floor(Math.random() * availableEmployees.length)];
 
-  // Create check-in request
+  log('INFO', 'CRON', 'Selected random employee for check-in', {
+    employeeId: randomEmployee.id,
+    employeeName: randomEmployee.name,
+    employeeTelegramId: randomEmployee.telegramId
+  });
+
   const checkInRequest = await prisma.checkInRequest.create({
     data: {
       userId: randomEmployee.id,
@@ -1294,7 +1943,6 @@ cron.schedule('*/30 * * * *', async () => {
     }
   });
 
-  // Send notification with button
   const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
   try {
     await bot.telegram.sendMessage(
@@ -1304,11 +1952,19 @@ cron.schedule('*/30 * * * *', async () => {
         [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
       ])
     );
+    log('INFO', 'CRON', 'Check-in notification sent to employee', {
+      employeeId: randomEmployee.id,
+      checkInRequestId: checkInRequest.id
+    });
   } catch (error) {
-    console.error('Error sending check-in notification:', error);
+    log('ERROR', 'CRON', 'Error sending check-in notification', {
+      employeeId: randomEmployee.id,
+      employeeTelegramId: randomEmployee.telegramId,
+      error: error.message,
+      stack: error.stack
+    });
   }
 
-  // Notify director
   const directors = await prisma.user.findMany({
     where: { role: 'DIRECTOR' }
   });
@@ -1319,21 +1975,34 @@ cron.schedule('*/30 * * * *', async () => {
         director.telegramId,
         `🔔 Запрос на проверку отправлен сотруднику ${randomEmployee.name}`
       );
+      log('INFO', 'CRON', 'Director notified about check-in', {
+        directorId: director.id,
+        directorTelegramId: director.telegramId,
+        employeeName: randomEmployee.name
+      });
     } catch (error) {
-      console.error('Error notifying director:', error);
+      log('ERROR', 'CRON', 'Error notifying director', {
+        directorId: director.id,
+        directorTelegramId: director.telegramId,
+        error: error.message
+      });
     }
   }
+
+  log('INFO', 'CRON', 'Random check-in cron job completed', {
+    employeeId: randomEmployee.id,
+    checkInRequestId: checkInRequest.id
+  });
 });
 
 // Cron job for cleaning up old photos (older than 6 months)
 cron.schedule('0 2 * * *', async () => {
   try {
-    console.log('🧹 Starting cleanup of old photos...');
+    log('INFO', 'CRON', 'Photo cleanup cron job started', {});
     
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
     
-    // Find all check-in results with photos older than 6 months
     const oldResults = await prisma.checkInResult.findMany({
       where: {
         timestamp: {
@@ -1351,25 +2020,26 @@ cron.schedule('0 2 * * *', async () => {
     });
 
     if (oldResults.length === 0) {
-      console.log('✅ No old photos to clean up');
+      log('INFO', 'CRON', 'No old photos to clean up', {});
       return;
     }
 
-    console.log(`📋 Found ${oldResults.length} old photos to delete`);
+    log('INFO', 'CRON', 'Found old photos to delete', {
+      count: oldResults.length,
+      cutoffDate: sixMonthsAgo.toISOString()
+    });
 
     let deletedCount = 0;
     let errorCount = 0;
 
     for (const result of oldResults) {
       try {
-        // Extract filename from photoPath (remove 'photos/' prefix if present)
         const fileName = result.photoPath.startsWith('photos/') 
           ? result.photoPath.substring(7) 
           : result.photoPath;
         
         await deletePhoto(fileName);
         
-        // Update database to remove photoPath
         await prisma.checkInResult.update({
           where: { id: result.id },
           data: {
@@ -1380,67 +2050,81 @@ cron.schedule('0 2 * * *', async () => {
         
         deletedCount++;
       } catch (error) {
-        console.error(`❌ Error deleting photo for result ${result.id}:`, error.message);
+        log('ERROR', 'CRON', 'Error deleting photo', {
+          resultId: result.id,
+          photoPath: result.photoPath,
+          error: error.message
+        });
         errorCount++;
       }
     }
 
-    console.log(`✅ Cleanup completed: ${deletedCount} photos deleted, ${errorCount} errors`);
+    log('INFO', 'CRON', 'Photo cleanup completed', {
+      totalFound: oldResults.length,
+      deletedCount,
+      errorCount
+    });
   } catch (error) {
-    console.error('❌ Error in photo cleanup cron job:', error);
+    log('ERROR', 'CRON', 'Error in photo cleanup cron job', {
+      error: error.message,
+      stack: error.stack
+    });
   }
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  log('INFO', 'STARTUP', 'Server started', {
+    port: PORT,
+    nodeEnv: process.env.NODE_ENV || 'production',
+    webAppUrl: WEB_APP_URL
+  });
 });
 
 // Start bot with database connection check
 async function startBot() {
-  console.log('🔄 Running database migrations...');
+  log('INFO', 'STARTUP', 'Starting bot initialization', {});
+  
   const migrationsOk = await runMigrations();
   if (!migrationsOk) {
-    console.error('❌ Failed to run database migrations');
-    // Не завершаем процесс сразу - даем время на инициализацию БД
-    console.error('⚠️  Application will continue, but database operations may fail');
-    console.error('⚠️  Railway will restart the container, and connection should succeed on next attempt');
-    // Вместо process.exit(1) даем приложению запуститься
-    // Railway сам перезапустит контейнер при ошибках
+    log('ERROR', 'STARTUP', 'Failed to run database migrations');
+    log('WARN', 'STARTUP', 'Application will continue, but database operations may fail');
   }
 
-  // Test S3 connection if configured
   if (process.env.YC_S3_BUCKET) {
-    console.log('🔄 Testing S3 connection...');
+    log('INFO', 'STARTUP', 'Testing S3 connection', {});
     await testS3Connection();
   } else {
-    console.log('⚠️  S3 not configured (YC_S3_BUCKET not set)');
+    log('WARN', 'STARTUP', 'S3 not configured', {});
   }
 
   try {
     await bot.launch();
     botRunning = true;
-    console.log('✅ Bot started successfully');
+    log('INFO', 'STARTUP', 'Bot started successfully', {});
   } catch (error) {
-    // Обработка ошибки 409 - конфликт с другим экземпляром бота
     if (error.response?.error_code === 409 || error.code === 409) {
-      console.warn('⚠️  Bot conflict detected (409). Another instance may be running.');
-      console.warn('⚠️  This is normal during Railway deployments. Waiting and retrying...');
-      // Ждем немного и пробуем снова
+      log('WARN', 'STARTUP', 'Bot conflict detected (409), retrying', {
+        error: error.message
+      });
       await new Promise(resolve => setTimeout(resolve, 5000));
       try {
         await bot.launch();
         botRunning = true;
-        console.log('✅ Bot started successfully after retry');
+        log('INFO', 'STARTUP', 'Bot started successfully after retry', {});
       } catch (retryError) {
-        console.error('❌ Error starting bot after retry:', retryError);
-        // Не завершаем процесс - приложение может работать без бота
-        console.warn('⚠️  Application will continue without bot. Bot functionality will be limited.');
+        log('ERROR', 'STARTUP', 'Error starting bot after retry', {
+          error: retryError.message,
+          stack: retryError.stack
+        });
+        log('WARN', 'STARTUP', 'Application will continue without bot');
       }
     } else {
-      console.error('❌ Error starting bot:', error);
-      // Не завершаем процесс - приложение может работать без бота
-      console.warn('⚠️  Application will continue without bot. Bot functionality will be limited.');
+      log('ERROR', 'STARTUP', 'Error starting bot', {
+        error: error.message,
+        stack: error.stack
+      });
+      log('WARN', 'STARTUP', 'Application will continue without bot');
     }
   }
 }
@@ -1449,7 +2133,7 @@ startBot();
 
 // Graceful shutdown
 process.once('SIGINT', async () => {
-  console.log('🛑 Received SIGINT, shutting down gracefully...');
+  log('INFO', 'SHUTDOWN', 'Received SIGINT, shutting down gracefully', {});
   if (botRunning) {
     await bot.stop('SIGINT');
   }
@@ -1458,7 +2142,7 @@ process.once('SIGINT', async () => {
 });
 
 process.once('SIGTERM', async () => {
-  console.log('🛑 Received SIGTERM, shutting down gracefully...');
+  log('INFO', 'SHUTDOWN', 'Received SIGTERM, shutting down gracefully', {});
   if (botRunning) {
     await bot.stop('SIGTERM');
   }
