@@ -10,9 +10,15 @@ export default function DirectorView() {
   const [checkIns, setCheckIns] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState({
+    notificationsEnabled: true,
+    weeklyZoneReminderEnabled: true
+  });
+  const [settingsLoading, setSettingsLoading] = useState(false);
 
   useEffect(() => {
     loadData();
+    loadSettings();
   }, []);
 
   const loadData = async () => {
@@ -38,6 +44,18 @@ export default function DirectorView() {
       console.error('Error loading data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadSettings = async () => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.get('/api/director/settings', {
+        headers: { 'x-telegram-init-data': initData }
+      });
+      setSettings(response.data);
+    } catch (error) {
+      console.error('Error loading settings:', error);
     }
   };
 
@@ -119,6 +137,29 @@ export default function DirectorView() {
     setZones(zones.filter(z => z.id !== zoneId));
   };
 
+  const handleToggleSetting = async (settingName) => {
+    setSettingsLoading(true);
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const newValue = !settings[settingName];
+      
+      const response = await axios.put('/api/director/settings', 
+        { [settingName]: newValue },
+        {
+          headers: { 'x-telegram-init-data': initData }
+        }
+      );
+      
+      setSettings(response.data);
+      alert(`Настройка "${settingName === 'notificationsEnabled' ? 'Уведомления' : 'Еженедельное напоминание'}" ${newValue ? 'включена' : 'отключена'}`);
+    } catch (error) {
+      console.error('Error updating settings:', error);
+      alert(error.response?.data?.error || 'Ошибка обновления настроек');
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -141,10 +182,10 @@ export default function DirectorView() {
 
       <div className="bg-white border-b">
         <div className="max-w-7xl mx-auto px-4">
-          <div className="flex space-x-1">
+          <div className="flex space-x-1 overflow-x-auto">
             <button
               onClick={() => setActiveTab('map')}
-              className={`px-4 py-3 text-sm font-medium transition-colors ${
+              className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 activeTab === 'map'
                   ? 'text-blue-600 border-b-2 border-blue-600'
                   : 'text-gray-600 hover:text-gray-800'
@@ -154,7 +195,7 @@ export default function DirectorView() {
             </button>
             <button
               onClick={() => setActiveTab('zones')}
-              className={`px-4 py-3 text-sm font-medium transition-colors ${
+              className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 activeTab === 'zones'
                   ? 'text-blue-600 border-b-2 border-blue-600'
                   : 'text-gray-600 hover:text-gray-800'
@@ -164,7 +205,7 @@ export default function DirectorView() {
             </button>
             <button
               onClick={() => setActiveTab('employees')}
-              className={`px-4 py-3 text-sm font-medium transition-colors ${
+              className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 activeTab === 'employees'
                   ? 'text-blue-600 border-b-2 border-blue-600'
                   : 'text-gray-600 hover:text-gray-800'
@@ -174,13 +215,23 @@ export default function DirectorView() {
             </button>
             <button
               onClick={() => setActiveTab('dashboard')}
-              className={`px-4 py-3 text-sm font-medium transition-colors ${
+              className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
                 activeTab === 'dashboard'
                   ? 'text-blue-600 border-b-2 border-blue-600'
                   : 'text-gray-600 hover:text-gray-800'
               }`}
             >
               📊 Проверки
+            </button>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
+                activeTab === 'settings'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
+            >
+              ⚙️ Настройки
             </button>
           </div>
         </div>
@@ -279,6 +330,81 @@ export default function DirectorView() {
         )}
         {activeTab === 'dashboard' && (
           <CheckInDashboard checkIns={checkIns} />
+        )}
+        {activeTab === 'settings' && (
+          <div className="bg-white rounded-lg shadow-sm p-6">
+            <h2 className="text-xl font-bold text-gray-800 mb-6">Настройки уведомлений</h2>
+            
+            <div className="space-y-6">
+              {/* Уведомления о пропущенных чекингах и вне зоны */}
+              <div className="border border-gray-200 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-2">
+                      🔔 Уведомления о чекингах
+                    </h3>
+                    <p className="text-sm text-gray-600">
+                      Получать уведомления в Telegram, если сотрудник не отправил чекинг или находится вне рабочей зоны
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleToggleSetting('notificationsEnabled')}
+                    disabled={settingsLoading}
+                    className={`ml-4 relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                      settings.notificationsEnabled ? 'bg-blue-600' : 'bg-gray-200'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        settings.notificationsEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="mt-3 text-xs text-gray-500">
+                  {settings.notificationsEnabled ? (
+                    <span className="text-green-600">✓ Уведомления включены</span>
+                  ) : (
+                    <span className="text-gray-400">✗ Уведомления отключены</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Еженедельное напоминание о зонах */}
+              <div className="border border-gray-200 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-2">
+                      📅 Еженедельное напоминание о зонах
+                    </h3>
+                    <p className="text-sm text-gray-600">
+                      Получать напоминание каждый понедельник в 9:00 о необходимости проставить зоны для командированных сотрудников
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleToggleSetting('weeklyZoneReminderEnabled')}
+                    disabled={settingsLoading}
+                    className={`ml-4 relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                      settings.weeklyZoneReminderEnabled ? 'bg-blue-600' : 'bg-gray-200'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        settings.weeklyZoneReminderEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="mt-3 text-xs text-gray-500">
+                  {settings.weeklyZoneReminderEnabled ? (
+                    <span className="text-green-600">✓ Напоминание включено</span>
+                  ) : (
+                    <span className="text-gray-400">✗ Напоминание отключено</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>
