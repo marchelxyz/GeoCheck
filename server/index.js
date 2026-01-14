@@ -219,6 +219,7 @@ function verifyTelegramWebAppData(initData) {
     // Все пары ключ=значение сортируем и соединяем через \n
 
 
+
     const dataCheckString = Array.from(urlParams.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => `${key}=${value}`)
@@ -570,7 +571,17 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Если employeeIds не передан или пустой, автоматически назначаем всех сотрудников
+    let finalEmployeeIds = employeeIds;
     if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
+      const allEmployees = await prisma.user.findMany({
+        where: { role: 'EMPLOYEE' },
+        select: { id: true }
+      });
+      finalEmployeeIds = allEmployees.map(emp => emp.id);
+    }
+
+    if (finalEmployeeIds.length === 0) {
       return res.status(400).json({ error: 'At least one employee must be assigned to the zone' });
     }
 
@@ -583,7 +594,7 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
         radius: parseFloat(radius),
         createdBy: user.id,
         employees: {
-          create: employeeIds.map(empId => ({
+          create: finalEmployeeIds.map(empId => ({
             userId: empId
           }))
         }
@@ -976,6 +987,7 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       return res.status(404).json({ error: 'Employee not found' });
     }
 
+    // Проверяем наличие pending запроса и отменяем его перед созданием нового
     const pendingRequest = await prisma.checkInRequest.findFirst({
       where: {
         userId: employee.id,
@@ -984,9 +996,14 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (pendingRequest) {
-      return res.status(400).json({ error: 'Employee already has a pending check-in request' });
+      // Отменяем старый запрос, помечая его как MISSED
+      await prisma.checkInRequest.update({
+        where: { id: pendingRequest.id },
+        data: { status: 'MISSED' }
+      });
     }
 
+    // Создаем новый запрос
     const checkInRequest = await prisma.checkInRequest.create({
       data: {
         userId: employee.id,
