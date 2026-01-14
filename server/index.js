@@ -16,47 +16,102 @@ dotenv.config();
 const app = express();
 const prisma = new PrismaClient();
 
+// Helper function to mask sensitive data in DATABASE_URL for logging
+function maskDatabaseUrl(url) {
+  if (!url) return 'NOT SET';
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.password) {
+      urlObj.password = '***';
+    }
+    return urlObj.toString();
+  } catch {
+    return 'INVALID FORMAT';
+  }
+}
+
 // Run database migrations
-// Run database migrations using prisma db push
-// Run database migrations using prisma db push
 async function runMigrations(maxRetries = 10, delay = 3000) {
-  // Сначала проверяем подключение к БД с retry логикой (как в mariko_vld)
-  console.log("🔄 Checking database connection before applying schema...");
+  // Проверяем наличие DATABASE_URL
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.error('❌ DATABASE_URL environment variable is not set!');
+    console.error('Please set DATABASE_URL in Railway environment variables.');
+    return false;
+  }
+
+  console.log('📋 Database connection info:');
+  console.log(`   URL (masked): ${maskDatabaseUrl(databaseUrl)}`);
+  
+  // Проверяем формат DATABASE_URL
+  try {
+    const urlObj = new URL(databaseUrl);
+    console.log(`   Host: ${urlObj.hostname}`);
+    console.log(`   Port: ${urlObj.port || '5432'}`);
+    console.log(`   Database: ${urlObj.pathname.slice(1)}`);
+  } catch (error) {
+    console.error('❌ Invalid DATABASE_URL format:', error.message);
+    return false;
+  }
+
+  // Сначала проверяем подключение к БД с retry логикой
+  console.log('🔄 Checking database connection before applying schema...');
   let dbConnected = false;
   const maxConnectionAttempts = 10;
 
   for (let attempt = 1; attempt <= maxConnectionAttempts; attempt++) {
     try {
-      // Используем prisma.$queryRaw для проверки подключения (аналог SELECT 1 из mariko_vld)
+      // Используем prisma.$queryRaw для проверки подключения
       await prisma.$queryRaw`SELECT 1`;
       dbConnected = true;
-      console.log("✅ Database connection established");
+      console.log('✅ Database connection established');
       break;
     } catch (error) {
       const isLastAttempt = attempt === maxConnectionAttempts;
       const errorInfo = {
-        code: error.code || "UNKNOWN",
+        code: error.code || 'UNKNOWN',
         message: error.message,
+        meta: error.meta || null,
       };
 
       if (isLastAttempt) {
-        console.error("❌ Ошибка подключения к БД после всех попыток:");
-        console.error("Код ошибки:", errorInfo.code);
-        console.error("Сообщение:", errorInfo.message);
-        console.error("Полная ошибка:", error);
+        console.error('❌ Ошибка подключения к БД после всех попыток:');
+        console.error(`   Код ошибки: ${errorInfo.code}`);
+        console.error(`   Сообщение: ${errorInfo.message}`);
+        if (errorInfo.meta) {
+          console.error(`   Метаданные:`, JSON.stringify(errorInfo.meta, null, 2));
+        }
+        
+        // Дополнительная диагностика
+        if (error.message.includes('Can\'t reach database server')) {
+          console.error('');
+          console.error('💡 Возможные причины:');
+          console.error('   1. База данных не запущена или не готова');
+          console.error('   2. База данных не подключена к сервису в Railway');
+          console.error('   3. Неверный DATABASE_URL (проверьте переменные окружения в Railway)');
+          console.error('   4. Проблемы с сетью между сервисами');
+          console.error('');
+          console.error('🔧 Рекомендации:');
+          console.error('   1. Убедитесь, что PostgreSQL сервис запущен в Railway');
+          console.error('   2. Проверьте, что база данных подключена к вашему сервису');
+          console.error('   3. Убедитесь, что DATABASE_URL установлен в переменных окружения');
+          console.error('   4. Проверьте логи PostgreSQL сервиса в Railway');
+        }
+        
+        console.error('Полная ошибка:', error);
         return false;
       } else {
-        // Экспоненциальная задержка как в mariko_vld: 2, 4, 6 секунд...
+        // Экспоненциальная задержка: 2, 4, 6 секунд...
         const waitTime = attempt * 2000;
-        console.warn(`⚠️  Попытка ${attempt} не удалась. Повтор через ${waitTime}мс...`);
-        console.warn("Ошибка:", errorInfo.message);
+        console.warn(`⚠️  Попытка ${attempt}/${maxConnectionAttempts} не удалась. Повтор через ${waitTime}мс...`);
+        console.warn(`   Ошибка: ${errorInfo.message}`);
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
   }
 
   if (!dbConnected) {
-    console.error("❌ Failed to connect to database. Cannot apply schema.");
+    console.error('❌ Failed to connect to database. Cannot apply schema.');
     return false;
   }
 
@@ -75,7 +130,7 @@ async function runMigrations(maxRetries = 10, delay = 3000) {
 
         process.on('close', (code) => {
           if (code === 0) {
-            console.log("✅ Database schema applied successfully");
+            console.log('✅ Database schema applied successfully');
             resolve(true);
           } else {
             console.error(`❌ Schema application attempt ${i + 1}/${maxRetries} failed with code ${code}`);
@@ -138,8 +193,7 @@ function verifyTelegramWebAppData(initData) {
     const dataCheckString = Array.from(urlParams.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => `${key}=${value}`)
-      .join('\
-');
+      .join('\\n');
 
     const secretKey = crypto
       .createHmac('sha256', 'WebAppData')
@@ -542,9 +596,7 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     try {
       await bot.telegram.sendMessage(
         employee.telegramId,
-        '📍 Проверка местоположения!\
-\
-Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
+        '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
       );
     } catch (error) {
       console.error('Error sending check-in notification:', error);
@@ -578,7 +630,7 @@ bot.start(async (ctx) => {
     ]).resize();
     
     await ctx.reply(
-      '👋 Привет!\n\nДля использования бота необходимо зарегистрироваться через веб-приложение.\nНажмите кнопку ниже, чтобы открыть приложение и зарегистрироваться.',
+      '👋 Привет!\\n\\nДля использования бота необходимо зарегистрироваться через веб-приложение.\\nНажмите кнопку ниже, чтобы открыть приложение и зарегистрироваться.',
       keyboard
     );
     return;
@@ -589,11 +641,8 @@ bot.start(async (ctx) => {
   ]).resize();
 
   await ctx.reply(
-    `Привет, ${user.name}! 👋\
-\
-` +
-    `Это бот для отслеживания геолокации сотрудников.\
-` +
+    `Привет, ${user.name}! 👋\\n\\n` +
+    `Это бот для отслеживания геолокации сотрудников.\\n` +
     `Нажмите кнопку ниже, чтобы открыть приложение.`,
     keyboard
   );
@@ -663,8 +712,7 @@ bot.on('location', async (ctx) => {
   });
 
   const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
-  await ctx.reply(`${status}\
-Расстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
+  await ctx.reply(`${status}\\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
 });
 
 // Handle photo
@@ -755,9 +803,7 @@ cron.schedule('*/30 * * * *', async () => {
   try {
     await bot.telegram.sendMessage(
       randomEmployee.telegramId,
-      '📍 Проверка местоположения!\
-\
-Пожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
+      '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение (Live Location) и фото.'
     );
   } catch (error) {
     console.error('Error sending check-in notification:', error);
@@ -787,10 +833,10 @@ app.listen(PORT, () => {
 
 // Start bot with database connection check
 async function startBot() {
-  console.log("🔄 Running database migrations...");
+  console.log('🔄 Running database migrations...');
   const migrationsOk = await runMigrations();
   if (!migrationsOk) {
-    console.error("❌ Failed to run database migrations");
+    console.error('❌ Failed to run database migrations');
     process.exit(1);
   }
 
@@ -800,9 +846,9 @@ async function startBot() {
   try {
     await bot.launch();
     botRunning = true;
-    console.log("✅ Bot started successfully");
+    console.log('✅ Bot started successfully');
   } catch (error) {
-    console.error("❌ Error starting bot:", error);
+    console.error('❌ Error starting bot:', error);
     process.exit(1);
   }
 }
@@ -810,16 +856,16 @@ async function startBot() {
 startBot();
 
 // Graceful shutdown
-process.once("SIGINT", async () => {
+process.once('SIGINT', async () => {
   if (botRunning) {
-    await bot.stop("SIGINT");
+    await bot.stop('SIGINT');
   }
   await prisma.$disconnect();
 });
 
-process.once("SIGTERM", async () => {
+process.once('SIGTERM', async () => {
   if (botRunning) {
-    await bot.stop("SIGTERM");
+    await bot.stop('SIGTERM');
   }
   await prisma.$disconnect();
 });
