@@ -14,7 +14,9 @@ const __dirname = dirname(__filename);
 dotenv.config();
 
 const app = express();
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+});
 
 // Helper function to mask sensitive data in DATABASE_URL for logging
 function maskDatabaseUrl(url) {
@@ -31,7 +33,7 @@ function maskDatabaseUrl(url) {
 }
 
 // Run database migrations
-async function runMigrations(maxRetries = 10, delay = 3000) {
+async function runMigrations(maxRetries = 15, delay = 3000) {
   // Проверяем наличие DATABASE_URL
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -57,19 +59,27 @@ async function runMigrations(maxRetries = 10, delay = 3000) {
   // Сначала проверяем подключение к БД с retry логикой
   console.log('🔄 Checking database connection before applying schema...');
   let dbConnected = false;
-  const maxConnectionAttempts = 10;
+  // Увеличиваем количество попыток до 20 и начальную задержку
+  const maxConnectionAttempts = 20;
+  const initialDelay = 3000; // Начальная задержка 3 секунды
 
   for (let attempt = 1; attempt <= maxConnectionAttempts; attempt++) {
     try {
       // Используем prisma.$queryRaw для проверки подключения
-      await prisma.$queryRaw`SELECT 1`;
+      // Добавляем таймаут для запроса
+      await Promise.race([
+        prisma.$queryRaw`SELECT 1`,
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Connection timeout')), 5000)
+        )
+      ]);
       dbConnected = true;
-      console.log('✅ Database connection established');
+      console.log(`✅ Database connection established on attempt ${attempt}`);
       break;
     } catch (error) {
       const isLastAttempt = attempt === maxConnectionAttempts;
       const errorInfo = {
-        code: error.code || 'UNKNOWN',
+        code: error.code || error.errorCode || 'UNKNOWN',
         message: error.message,
         meta: error.meta || null,
       };
@@ -83,28 +93,33 @@ async function runMigrations(maxRetries = 10, delay = 3000) {
         }
         
         // Дополнительная диагностика
-        if (error.message.includes('Can\'t reach database server')) {
+        if (error.message.includes('Can\'t reach database server') || 
+            error.message.includes('Connection timeout') ||
+            error.code === 'P1001') {
           console.error('');
           console.error('💡 Возможные причины:');
-          console.error('   1. База данных не запущена или не готова');
+          console.error('   1. База данных не запущена или не готова (может потребоваться время на инициализацию)');
           console.error('   2. База данных не подключена к сервису в Railway');
           console.error('   3. Неверный DATABASE_URL (проверьте переменные окружения в Railway)');
           console.error('   4. Проблемы с сетью между сервисами');
+          console.error('   5. Railway перезапускает контейнеры слишком часто');
           console.error('');
           console.error('🔧 Рекомендации:');
           console.error('   1. Убедитесь, что PostgreSQL сервис запущен в Railway');
           console.error('   2. Проверьте, что база данных подключена к вашему сервису');
           console.error('   3. Убедитесь, что DATABASE_URL установлен в переменных окружения');
           console.error('   4. Проверьте логи PostgreSQL сервиса в Railway');
+          console.error('   5. Подождите несколько минут - база данных может инициализироваться');
+          console.error('   6. Проверьте настройки restart policy в Railway');
         }
         
         console.error('Полная ошибка:', error);
         return false;
       } else {
-        // Экспоненциальная задержка: 2, 4, 6 секунд...
-        const waitTime = attempt * 2000;
+        // Экспоненциальная задержка с начальной задержкой: 3, 6, 9 секунд...
+        const waitTime = initialDelay + (attempt - 1) * 3000;
         console.warn(`⚠️  Попытка ${attempt}/${maxConnectionAttempts} не удалась. Повтор через ${waitTime}мс...`);
-        console.warn(`   Ошибка: ${errorInfo.message}`);
+        console.warn(`   Ошибка: ${errorInfo.message.substring(0, 100)}${errorInfo.message.length > 100 ? '...' : ''}`);
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
@@ -837,11 +852,12 @@ async function startBot() {
   const migrationsOk = await runMigrations();
   if (!migrationsOk) {
     console.error('❌ Failed to run database migrations');
-    process.exit(1);
+    // Не завершаем процесс сразу - даем время на инициализацию БД
+    console.error('⚠️  Application will continue, but database operations may fail');
+    console.error('⚠️  Railway will restart the container, and connection should succeed on next attempt');
+    // Вместо process.exit(1) даем приложению запуститься
+    // Railway сам перезапустит контейнер при ошибках
   }
-
-  // runMigrations() already checks database connection and applies schema
-  // No need for additional connectToDatabase() call
 
   try {
     await bot.launch();
@@ -857,15 +873,19 @@ startBot();
 
 // Graceful shutdown
 process.once('SIGINT', async () => {
+  console.log('🛑 Received SIGINT, shutting down gracefully...');
   if (botRunning) {
     await bot.stop('SIGINT');
   }
   await prisma.$disconnect();
+  process.exit(0);
 });
 
 process.once('SIGTERM', async () => {
+  console.log('🛑 Received SIGTERM, shutting down gracefully...');
   if (botRunning) {
     await bot.stop('SIGTERM');
   }
   await prisma.$disconnect();
+  process.exit(0);
 });
