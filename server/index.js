@@ -9,6 +9,7 @@ import multer from 'multer';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { getPhotoUrl, deletePhoto, testS3Connection } from './s3Service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -216,6 +217,7 @@ function verifyTelegramWebAppData(initData) {
 
     // Формируем строку для проверки согласно документации Telegram
     // Все пары ключ=значение сортируем и соединяем через \n
+
 
     const dataCheckString = Array.from(urlParams.entries())
       .sort(([a], [b]) => a.localeCompare(b))
@@ -842,6 +844,69 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
   }
 });
 
+// Get photo URL for check-in result (Director only)
+app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { id: requestId } = req.params;
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const result = await prisma.checkInResult.findUnique({
+      where: { requestId },
+      include: {
+        request: {
+          include: {
+            user: {
+              select: { name: true }
+            }
+          }
+        }
+      }
+    });
+
+    if (!result) {
+      return res.status(404).json({ error: 'Check-in result not found' });
+    }
+
+    // Если есть photoPath в S3, получаем URL
+    if (result.photoPath) {
+      try {
+        const photoUrl = await getPhotoUrl(result.photoPath, 3600); // URL действителен 1 час
+        return res.json({ 
+          url: photoUrl,
+          requestId: result.requestId,
+          employeeName: result.request.user.name
+        });
+      } catch (error) {
+        console.error('Error getting photo URL from S3:', error);
+        return res.status(500).json({ error: 'Failed to get photo URL from S3' });
+      }
+    }
+
+    // Если есть только photoFileId (старый формат), возвращаем его
+    if (result.photoFileId) {
+      return res.json({ 
+        fileId: result.photoFileId,
+        requestId: result.requestId,
+        employeeName: result.request.user.name,
+        note: 'This photo is stored in Telegram Bot API. Consider migrating to S3.'
+      });
+    }
+
+    return res.status(404).json({ error: 'Photo not found for this check-in' });
+  } catch (error) {
+    console.error('Error in /api/check-ins/:id/photo:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get check-in results (Director dashboard)
 app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
   try {
@@ -1199,6 +1264,72 @@ cron.schedule('*/30 * * * *', async () => {
   }
 });
 
+// Cron job for cleaning up old photos (older than 6 months)
+cron.schedule('0 2 * * *', async () => {
+  try {
+    console.log('🧹 Starting cleanup of old photos...');
+    
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    
+    // Find all check-in results with photos older than 6 months
+    const oldResults = await prisma.checkInResult.findMany({
+      where: {
+        timestamp: {
+          lt: sixMonthsAgo
+        },
+        photoPath: {
+          not: null
+        }
+      },
+      select: {
+        id: true,
+        photoPath: true,
+        requestId: true
+      }
+    });
+
+    if (oldResults.length === 0) {
+      console.log('✅ No old photos to clean up');
+      return;
+    }
+
+    console.log(`📋 Found ${oldResults.length} old photos to delete`);
+
+    let deletedCount = 0;
+    let errorCount = 0;
+
+    for (const result of oldResults) {
+      try {
+        // Extract filename from photoPath (remove 'photos/' prefix if present)
+        const fileName = result.photoPath.startsWith('photos/') 
+          ? result.photoPath.substring(7) 
+          : result.photoPath;
+        
+        await deletePhoto(fileName);
+        
+        // Update database to remove photoPath
+        await prisma.checkInResult.update({
+          where: { id: result.id },
+          data: {
+            photoPath: null,
+            photoUrl: null
+          }
+        });
+        
+        deletedCount++;
+      } catch (error) {
+        console.error(`❌ Error deleting photo for result ${result.id}:`, error.message);
+        errorCount++;
+      }
+    }
+
+    console.log(`✅ Cleanup completed: ${deletedCount} photos deleted, ${errorCount} errors`);
+  } catch (error) {
+    console.error('❌ Error in photo cleanup cron job:', error);
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -1215,6 +1346,14 @@ async function startBot() {
     console.error('⚠️  Railway will restart the container, and connection should succeed on next attempt');
     // Вместо process.exit(1) даем приложению запуститься
     // Railway сам перезапустит контейнер при ошибках
+  }
+
+  // Test S3 connection if configured
+  if (process.env.YC_S3_BUCKET) {
+    console.log('🔄 Testing S3 connection...');
+    await testS3Connection();
+  } else {
+    console.log('⚠️  S3 not configured (YC_S3_BUCKET not set)');
   }
 
   try {
