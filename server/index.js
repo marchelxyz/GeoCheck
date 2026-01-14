@@ -577,6 +577,7 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
         id: true,
         telegramId: true,
         name: true,
+        checkInsEnabled: true,
         createdAt: true
       },
       orderBy: { createdAt: 'desc' }
@@ -593,6 +594,135 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
     log('ERROR', 'EMPLOYEE', 'Error getting employees list', {
       requestId: req.requestId,
       telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle check-ins enabled/disabled for employee (Director only)
+app.put('/api/employees/:id/toggle-checkins', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: directorId } = req.telegramUser;
+    const { id: employeeId } = req.params;
+
+    log('INFO', 'EMPLOYEE', 'Toggle check-ins request', {
+      requestId: req.requestId,
+      directorTelegramId: directorId,
+      employeeId
+    });
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(directorId) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      log('WARN', 'EMPLOYEE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: directorId,
+        role: director?.role
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const employee = await prisma.user.findUnique({
+      where: { id: employeeId }
+    });
+
+    if (!employee || employee.role !== 'EMPLOYEE') {
+      log('WARN', 'EMPLOYEE', 'Employee not found', {
+        requestId: req.requestId,
+        directorId: director.id,
+        employeeId
+      });
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    const updatedEmployee = await prisma.user.update({
+      where: { id: employeeId },
+      data: {
+        checkInsEnabled: !employee.checkInsEnabled
+      }
+    });
+
+    log('INFO', 'EMPLOYEE', 'Check-ins status toggled', {
+      requestId: req.requestId,
+      directorId: director.id,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      newStatus: updatedEmployee.checkInsEnabled
+    });
+
+    res.json(updatedEmployee);
+  } catch (error) {
+    log('ERROR', 'EMPLOYEE', 'Error toggling check-ins', {
+      requestId: req.requestId,
+      directorTelegramId: req.telegramUser?.id,
+      employeeId: req.params.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete employee (Director only)
+app.delete('/api/employees/:id', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: directorId } = req.telegramUser;
+    const { id: employeeId } = req.params;
+
+    log('INFO', 'EMPLOYEE', 'Delete employee request', {
+      requestId: req.requestId,
+      directorTelegramId: directorId,
+      employeeId
+    });
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(directorId) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      log('WARN', 'EMPLOYEE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: directorId,
+        role: director?.role
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const employee = await prisma.user.findUnique({
+      where: { id: employeeId }
+    });
+
+    if (!employee || employee.role !== 'EMPLOYEE') {
+      log('WARN', 'EMPLOYEE', 'Employee not found', {
+        requestId: req.requestId,
+        directorId: director.id,
+        employeeId
+      });
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    // Delete employee (cascade will handle related records)
+    await prisma.user.delete({
+      where: { id: employeeId }
+    });
+
+    log('INFO', 'EMPLOYEE', 'Employee deleted successfully', {
+      requestId: req.requestId,
+      directorId: director.id,
+      employeeId: employee.id,
+      employeeName: employee.name
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    log('ERROR', 'EMPLOYEE', 'Error deleting employee', {
+      requestId: req.requestId,
+      directorTelegramId: req.telegramUser?.id,
+      employeeId: req.params.id,
       error: error.message,
       stack: error.stack
     });
@@ -1169,15 +1299,14 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
 });
 
 // Submit photo for check-in
-app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
+app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), async (req, res) => {
   try {
     const { id } = req.telegramUser;
-    const { photoFileId } = req.body;
 
     log('INFO', 'CHECKIN', 'Submit photo for check-in', {
       requestId: req.requestId,
       telegramId: id,
-      hasPhotoFileId: !!photoFileId
+      hasFile: !!req.file
     });
 
     const user = await prisma.user.findUnique({
@@ -1208,6 +1337,43 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
       return res.status(404).json({ error: 'No pending check-in request' });
     }
 
+    let photoFileId = null;
+    let photoPath = null;
+    let photoUrl = null;
+
+    // Если файл загружен через multer, сохраняем его в S3
+    if (req.file) {
+      try {
+        const { uploadPhoto } = await import('./s3Service.js');
+        const fileName = `check-in-${pendingRequest.id}-${Date.now()}.jpg`;
+        photoPath = `photos/${fileName}`;
+        photoUrl = await uploadPhoto(req.file.path, photoPath);
+        
+        // Удаляем временный файл
+        fs.unlinkSync(req.file.path);
+        
+        log('INFO', 'CHECKIN', 'Photo uploaded to S3', {
+          requestId: req.requestId,
+          userId: user.id,
+          checkInRequestId: pendingRequest.id,
+          photoPath
+        });
+      } catch (error) {
+        log('ERROR', 'CHECKIN', 'Error uploading photo to S3', {
+          requestId: req.requestId,
+          userId: user.id,
+          checkInRequestId: pendingRequest.id,
+          error: error.message
+        });
+        // Продолжаем с file_id если S3 не работает
+      }
+    }
+
+    // Если photoFileId передан в теле запроса (для совместимости)
+    if (req.body.photoFileId && !photoPath) {
+      photoFileId = req.body.photoFileId;
+    }
+
     const result = await prisma.checkInResult.findUnique({
       where: { requestId: pendingRequest.id }
     });
@@ -1215,7 +1381,11 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
     if (result) {
       await prisma.checkInResult.update({
         where: { id: result.id },
-        data: { photoFileId }
+        data: {
+          photoFileId: photoFileId || result.photoFileId,
+          photoPath: photoPath || result.photoPath,
+          photoUrl: photoUrl || result.photoUrl
+        }
       });
       log('INFO', 'CHECKIN', 'Photo added to existing check-in result', {
         requestId: req.requestId,
@@ -1230,7 +1400,9 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, async (req, res) => {
           locationLat: 0,
           locationLon: 0,
           isWithinZone: false,
-          photoFileId
+          photoFileId,
+          photoPath,
+          photoUrl
         }
       });
       log('INFO', 'CHECKIN', 'Check-in result created with photo', {
@@ -1644,6 +1816,21 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+// SPA fallback route - serve index.html for all non-API routes
+app.get('*', (req, res) => {
+  // Skip API routes and static assets
+  if (req.path.startsWith('/api/') || req.path.startsWith('/assets/')) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  
+  log('INFO', 'SPA', 'Serving index.html for SPA route', {
+    requestId: req.requestId,
+    path: req.path
+  });
+  
+  res.sendFile(join(__dirname, '../client/dist/index.html'));
+});
+
 const WEB_APP_URL = process.env.WEB_APP_URL || `http://localhost:${PORT}`;
 
 // Bot handlers
@@ -1892,12 +2079,16 @@ cron.schedule('*/30 * * * *', async () => {
     return;
   }
 
+  // Only get employees with check-ins enabled
   const employees = await prisma.user.findMany({
-    where: { role: 'EMPLOYEE' }
+    where: { 
+      role: 'EMPLOYEE',
+      checkInsEnabled: true
+    }
   });
 
   if (employees.length === 0) {
-    log('INFO', 'CRON', 'No employees found, skipping', {});
+    log('INFO', 'CRON', 'No employees with check-ins enabled found, skipping', {});
     return;
   }
 
