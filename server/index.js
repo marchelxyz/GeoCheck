@@ -203,12 +203,18 @@ function verifyTelegramWebAppData(initData) {
   try {
     const urlParams = new URLSearchParams(initData);
     const hash = urlParams.get('hash');
+    if (!hash) {
+      console.error('Hash not found in initData');
+      return false;
+    }
     urlParams.delete('hash');
 
+    // Формируем строку для проверки согласно документации Telegram
+    // Все пары ключ=значение сортируем и соединяем через \n
     const dataCheckString = Array.from(urlParams.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => `${key}=${value}`)
-      .join('\\n'); // ИСПРАВЛЕНО: было '\\\\n', должно быть '\\n'
+      .join('\n'); // ИСПРАВЛЕНО: используем одинарный \n (не двойной обратный слэш)
 
     const secretKey = crypto
       .createHmac('sha256', 'WebAppData')
@@ -219,6 +225,15 @@ function verifyTelegramWebAppData(initData) {
       .createHmac('sha256', secretKey)
       .update(dataCheckString)
       .digest('hex');
+
+    if (calculatedHash !== hash) {
+      console.error('Hash mismatch:', {
+        calculated: calculatedHash.substring(0, 10) + '...',
+        received: hash.substring(0, 10) + '...',
+        dataCheckStringLength: dataCheckString.length,
+        dataCheckStringPreview: dataCheckString.substring(0, 100)
+      });
+    }
 
     return calculatedHash === hash;
   } catch (error) {
@@ -877,8 +892,26 @@ async function startBot() {
     botRunning = true;
     console.log('✅ Bot started successfully');
   } catch (error) {
-    console.error('❌ Error starting bot:', error);
-    process.exit(1);
+    // Обработка ошибки 409 - конфликт с другим экземпляром бота
+    if (error.response?.error_code === 409 || error.code === 409) {
+      console.warn('⚠️  Bot conflict detected (409). Another instance may be running.');
+      console.warn('⚠️  This is normal during Railway deployments. Waiting and retrying...');
+      // Ждем немного и пробуем снова
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      try {
+        await bot.launch();
+        botRunning = true;
+        console.log('✅ Bot started successfully after retry');
+      } catch (retryError) {
+        console.error('❌ Error starting bot after retry:', retryError);
+        // Не завершаем процесс - приложение может работать без бота
+        console.warn('⚠️  Application will continue without bot. Bot functionality will be limited.');
+      }
+    } else {
+      console.error('❌ Error starting bot:', error);
+      // Не завершаем процесс - приложение может работать без бота
+      console.warn('⚠️  Application will continue without bot. Bot functionality will be limited.');
+    }
   }
 }
 
