@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import DirectorView from './components/DirectorView';
 import EmployeeView from './components/EmployeeView';
@@ -7,14 +6,20 @@ import CheckInInterface from './components/CheckInInterface';
 import Loading from './components/Loading';
 
 function App() {
-  const [searchParams] = useSearchParams();
-  const requestId = searchParams.get('requestId');
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [requestId, setRequestId] = useState(null);
 
   useEffect(() => {
+    // Проверяем URL параметры
+    const params = new URLSearchParams(window.location.search);
+    const reqId = params.get('requestId');
+    if (reqId) {
+      setRequestId(reqId);
+    }
+    
     initTelegramWebApp();
   }, []);
 
