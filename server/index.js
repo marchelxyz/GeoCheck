@@ -2595,6 +2595,30 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
+// Cleanup broken photos (daily)
+cron.schedule('15 4 * * *', async () => {
+  try {
+    log('INFO', 'CRON', 'Starting broken photo cleanup');
+    const { cleanupPhotos } = await import('./s3Service.js');
+    const result = await cleanupPhotos({ minSizeBytes: 1024 });
+    log('INFO', 'CRON', 'Broken photo cleanup finished', result);
+  } catch (error) {
+    log('ERROR', 'CRON', 'Broken photo cleanup failed', { error: error.message });
+  }
+});
+
+// Cleanup photos older than 6 months (runs twice a year on Jan 1 and Jul 1)
+cron.schedule('0 5 1 1,7 *', async () => {
+  try {
+    log('INFO', 'CRON', 'Starting old photo cleanup');
+    const { cleanupPhotos } = await import('./s3Service.js');
+    const result = await cleanupPhotos({ olderThanDays: 182 });
+    log('INFO', 'CRON', 'Old photo cleanup finished', result);
+  } catch (error) {
+    log('ERROR', 'CRON', 'Old photo cleanup failed', { error: error.message });
+  }
+});
+
 // Cron job for cleaning up old photos (older than 6 months)
 cron.schedule('0 2 * * *', async () => {
   try {
