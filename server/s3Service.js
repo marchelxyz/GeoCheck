@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
+import fs from 'fs';
 
 // Инициализация S3 клиента для Yandex Cloud
 const s3Client = new S3Client({
@@ -28,10 +29,13 @@ export async function uploadPhoto(fileBuffer, fileName, contentType = 'image/jpe
   }
 
   try {
+    const body = typeof fileBuffer === 'string'
+      ? fs.createReadStream(fileBuffer)
+      : fileBuffer;
     const command = new PutObjectCommand({
       Bucket: BUCKET_NAME,
       Key: `photos/${fileName}`,
-      Body: fileBuffer,
+      Body: body,
       ContentType: contentType,
       // Устанавливаем публичный доступ для чтения (если бакет публичный)
       ACL: 'public-read'

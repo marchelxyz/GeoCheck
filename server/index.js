@@ -1642,8 +1642,8 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
       try {
         const { uploadPhoto } = await import('./s3Service.js');
         const fileName = `check-in-${pendingRequest.id}-${Date.now()}.jpg`;
-        photoPath = `photos/${fileName}`;
-        photoUrl = await uploadPhoto(req.file.path, photoPath);
+        photoPath = fileName;
+        photoUrl = await uploadPhoto(req.file.path, fileName, req.file.mimetype || 'image/jpeg');
         
         // Удаляем временный файл
         fs.unlinkSync(req.file.path);
@@ -1769,8 +1769,11 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
     }
 
     if (result.photoPath) {
+      const normalizedPath = result.photoPath.startsWith('photos/')
+        ? result.photoPath.slice('photos/'.length)
+        : result.photoPath;
       try {
-        const photoUrl = await getPhotoUrl(result.photoPath, 3600);
+        const photoUrl = await getPhotoUrl(normalizedPath, 3600);
         log('INFO', 'CHECKIN', 'Photo URL retrieved from S3', {
           requestId: req.requestId,
           checkInRequestId: requestId,
@@ -1859,7 +1862,10 @@ app.get('/api/check-ins/:id/photo/file', verifyTelegramWebApp, async (req, res) 
       return res.status(404).json({ error: 'Photo not found for this check-in' });
     }
 
-    const signedUrl = await getPhotoUrl(result.photoPath, 300);
+    const normalizedPath = result.photoPath.startsWith('photos/')
+      ? result.photoPath.slice('photos/'.length)
+      : result.photoPath;
+    const signedUrl = await getPhotoUrl(normalizedPath, 300);
     const photoResponse = await fetch(signedUrl);
 
     if (!photoResponse.ok) {
