@@ -231,7 +231,18 @@ export default function CheckInInterface({ requestId, onComplete }) {
   };
 
   const handleSendPhoto = async () => {
-    // Прямой вызов камеры через MediaDevices API
+    setPhotoError(null);
+
+    const platform = window.Telegram?.WebApp?.platform;
+    const preferNative = platform === 'android' || platform === 'ios';
+
+    if (preferNative) {
+      const opened = openNativeCamera();
+      if (opened) {
+        return;
+      }
+    }
+
     if (navigator.mediaDevices?.getUserMedia) {
       const started = await startCamera();
       if (started) {
@@ -239,7 +250,6 @@ export default function CheckInInterface({ requestId, onComplete }) {
       }
     }
 
-    // Фоллбэк на нативную камеру Telegram через input capture
     const opened = openNativeCamera();
     if (!opened) {
       setPhotoError('Не удалось открыть камеру. Пожалуйста, обновите Telegram и повторите попытку.');
@@ -309,7 +319,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
         type="file"
         accept="image/*"
         capture="environment"
-        className="hidden"
+        style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }}
         onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) {
