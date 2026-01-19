@@ -1128,6 +1128,90 @@ app.get('/api/zones', verifyTelegramWebApp, async (req, res) => {
   }
 });
 
+// Get director settings
+app.get('/api/director/settings', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) },
+      select: {
+        role: true,
+        notificationsEnabled: true,
+        weeklyZoneReminderEnabled: true,
+        reportDeadlineMinutes: true
+      }
+    });
+
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    res.json({
+      notificationsEnabled: user.notificationsEnabled,
+      weeklyZoneReminderEnabled: user.weeklyZoneReminderEnabled,
+      reportDeadlineMinutes: user.reportDeadlineMinutes ?? 5
+    });
+  } catch (error) {
+    log('ERROR', 'DIRECTOR', 'Error getting director settings', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update director settings
+app.put('/api/director/settings', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { notificationsEnabled, weeklyZoneReminderEnabled, reportDeadlineMinutes } = req.body || {};
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) },
+      select: { id: true, role: true }
+    });
+
+    if (!user || user.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const data = {};
+    if (typeof notificationsEnabled === 'boolean') {
+      data.notificationsEnabled = notificationsEnabled;
+    }
+    if (typeof weeklyZoneReminderEnabled === 'boolean') {
+      data.weeklyZoneReminderEnabled = weeklyZoneReminderEnabled;
+    }
+    if (reportDeadlineMinutes !== undefined) {
+      const value = Math.max(1, Math.min(120, Number(reportDeadlineMinutes)));
+      if (Number.isFinite(value)) {
+        data.reportDeadlineMinutes = Math.round(value);
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data,
+      select: {
+        notificationsEnabled: true,
+        weeklyZoneReminderEnabled: true,
+        reportDeadlineMinutes: true
+      }
+    });
+
+    res.json(updated);
+  } catch (error) {
+    log('ERROR', 'DIRECTOR', 'Error updating director settings', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get employee zones (for employee view)
 app.get('/api/zones/my', verifyTelegramWebApp, async (req, res) => {
   try {
@@ -1534,6 +1618,25 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
       return res.status(404).json({ error: 'No pending check-in request' });
     }
 
+    if (pendingRequest.expiresAt && new Date() > pendingRequest.expiresAt) {
+      await prisma.checkInRequest.update({
+        where: { id: pendingRequest.id },
+        data: { status: 'MISSED' }
+      });
+      if (pendingRequest.telegramMessageId) {
+        try {
+          await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
+        } catch (error) {
+          log('WARN', 'CHECKIN', 'Failed to delete expired check-in message', {
+            requestId: req.requestId,
+            telegramMessageId: pendingRequest.telegramMessageId,
+            error: error.message
+          });
+        }
+      }
+      return res.status(410).json({ error: 'Время на отчет истекло' });
+    }
+
     const locationCheck = await checkLocationInZones(latitude, longitude, user.id);
 
     const existingResult = await prisma.checkInResult.findUnique({
@@ -1631,6 +1734,25 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
         userId: user.id
       });
       return res.status(404).json({ error: 'No pending check-in request' });
+    }
+
+    if (pendingRequest.expiresAt && new Date() > pendingRequest.expiresAt) {
+      await prisma.checkInRequest.update({
+        where: { id: pendingRequest.id },
+        data: { status: 'MISSED' }
+      });
+      if (pendingRequest.telegramMessageId) {
+        try {
+          await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
+        } catch (error) {
+          log('WARN', 'CHECKIN', 'Failed to delete expired check-in message', {
+            requestId: req.requestId,
+            telegramMessageId: pendingRequest.telegramMessageId,
+            error: error.message
+          });
+        }
+      }
+      return res.status(410).json({ error: 'Время на отчет истекло' });
     }
 
     let photoFileId = null;
@@ -2039,10 +2161,14 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       });
     }
 
+    const deadlineMinutes = Number.isInteger(user.reportDeadlineMinutes)
+      ? user.reportDeadlineMinutes
+      : 5;
     const checkInRequest = await prisma.checkInRequest.create({
       data: {
         userId: employee.id,
-        status: 'PENDING'
+        status: 'PENDING',
+        expiresAt: new Date(Date.now() + deadlineMinutes * 60 * 1000)
       }
     });
 
@@ -2058,7 +2184,7 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     try {
       const sentMessage = await bot.telegram.sendMessage(
         employee.telegramId,
-        '📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.',
+        `📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.\n⏱ На сдачу отчета есть ${deadlineMinutes} мин.`,
         Markup.inlineKeyboard([
           [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
         ])
@@ -2242,7 +2368,7 @@ bot.start(async (ctx) => {
     ]).resize();
     
     await ctx.reply(
-      '👋 Привет!\\n\\nДля использования бота необходимо зарегистрироваться через веб-приложение.\\nНажмите кнопку ниже, чтобы открыть приложение и зарегистрироваться.',
+      '👋 Привет!\n\nДля использования бота необходимо зарегистрироваться через веб-приложение.\nНажмите кнопку ниже, чтобы открыть приложение и зарегистрироваться.',
       keyboard
     );
     return;
@@ -2260,8 +2386,8 @@ bot.start(async (ctx) => {
   ]).resize();
 
   await ctx.reply(
-    `Привет, ${user.name}! 👋\\n\\n` +
-    `Это бот для отслеживания геолокации сотрудников.\\n` +
+    `Привет, ${user.name}! 👋\n\n` +
+    `Это бот для отслеживания геолокации сотрудников.\n` +
     `Нажмите кнопку ниже, чтобы открыть приложение.`,
     keyboard
   );
@@ -2336,6 +2462,25 @@ bot.on('location', async (ctx) => {
     return ctx.reply('Нет активных запросов на проверку');
   }
 
+  if (pendingRequest.expiresAt && new Date() > pendingRequest.expiresAt) {
+    await prisma.checkInRequest.update({
+      where: { id: pendingRequest.id },
+      data: { status: 'MISSED' }
+    });
+    if (pendingRequest.telegramMessageId) {
+      try {
+        await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
+      } catch (error) {
+        log('WARN', 'BOT', 'Failed to delete expired check-in message', {
+          telegramId: userId,
+          telegramMessageId: pendingRequest.telegramMessageId,
+          error: error.message
+        });
+      }
+    }
+    return ctx.reply('⏱ Время на отчет истекло. Запрос закрыт.');
+  }
+
   const locationCheck = await checkLocationInZones(location.latitude, location.longitude, user.id);
 
   const existingResult = await prisma.checkInResult.findUnique({
@@ -2375,7 +2520,7 @@ bot.on('location', async (ctx) => {
   await finalizeCheckInIfReady(pendingRequest.id);
 
   const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
-  await ctx.reply(`${status}\\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
+  await ctx.reply(`${status}\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
 });
 
 // Handle photo (fallback for direct photo send)
@@ -2408,6 +2553,26 @@ bot.on('photo', async (ctx) => {
   });
 
   if (pendingRequest) {
+    if (pendingRequest.expiresAt && new Date() > pendingRequest.expiresAt) {
+      await prisma.checkInRequest.update({
+        where: { id: pendingRequest.id },
+        data: { status: 'MISSED' }
+      });
+      if (pendingRequest.telegramMessageId) {
+        try {
+          await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
+        } catch (error) {
+          log('WARN', 'BOT', 'Failed to delete expired check-in message', {
+            telegramId: userId,
+            telegramMessageId: pendingRequest.telegramMessageId,
+            error: error.message
+          });
+        }
+      }
+      await ctx.reply('⏱ Время на отчет истекло. Запрос закрыт.');
+      return;
+    }
+
     const result = await prisma.checkInResult.findUnique({
       where: { requestId: pendingRequest.id }
     });
@@ -2492,6 +2657,10 @@ cron.schedule('* * * * *', async () => {
     where: { role: 'DIRECTOR' }
   });
 
+  const defaultDeadlineMinutes = Number.isInteger(directors[0]?.reportDeadlineMinutes)
+    ? directors[0].reportDeadlineMinutes
+    : 5;
+
   for (const employee of employees) {
     const workDays = parseWorkDays(employee.workDays);
     const normalized = normalizeWorkWindow(employee.workStartMinutes, employee.workEndMinutes);
@@ -2526,7 +2695,8 @@ cron.schedule('* * * * *', async () => {
       const checkInRequest = await prisma.checkInRequest.create({
         data: {
           userId: employee.id,
-          status: 'PENDING'
+          status: 'PENDING',
+          expiresAt: new Date(Date.now() + defaultDeadlineMinutes * 60 * 1000)
         }
       });
 
@@ -2534,7 +2704,7 @@ cron.schedule('* * * * *', async () => {
       try {
         const sentMessage = await bot.telegram.sendMessage(
           employee.telegramId,
-          '📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.',
+          `📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.\n⏱ На сдачу отчета есть ${defaultDeadlineMinutes} мин.`,
           Markup.inlineKeyboard([
             [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
           ])
@@ -2616,6 +2786,53 @@ cron.schedule('0 5 1 1,7 *', async () => {
     log('INFO', 'CRON', 'Old photo cleanup finished', result);
   } catch (error) {
     log('ERROR', 'CRON', 'Old photo cleanup failed', { error: error.message });
+  }
+});
+
+// Mark expired check-ins as missed (every minute)
+cron.schedule('* * * * *', async () => {
+  try {
+    const now = new Date();
+    const expired = await prisma.checkInRequest.findMany({
+      where: {
+        status: 'PENDING',
+        expiresAt: { lt: now }
+      },
+      select: { id: true, userId: true, telegramMessageId: true }
+    });
+
+    if (expired.length === 0) {
+      return;
+    }
+
+    await prisma.checkInRequest.updateMany({
+      where: { id: { in: expired.map((item) => item.id) } },
+      data: { status: 'MISSED' }
+    });
+
+    for (const item of expired) {
+      if (item.telegramMessageId) {
+        try {
+          const user = await prisma.user.findUnique({
+            where: { id: item.userId },
+            select: { telegramId: true }
+          });
+          if (user?.telegramId) {
+            await bot.telegram.deleteMessage(user.telegramId, item.telegramMessageId);
+          }
+        } catch (error) {
+          log('WARN', 'CHECKIN', 'Failed to delete expired check-in message', {
+            checkInRequestId: item.id,
+            telegramMessageId: item.telegramMessageId,
+            error: error.message
+          });
+        }
+      }
+    }
+
+    log('INFO', 'CRON', 'Expired check-ins marked as missed', { count: expired.length });
+  } catch (error) {
+    log('ERROR', 'CRON', 'Failed to mark expired check-ins', { error: error.message });
   }
 });
 

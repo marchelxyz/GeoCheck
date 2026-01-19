@@ -19,6 +19,7 @@ model User {
   workStartMinutes Int           @default(540) // 09:00
   workEndMinutes Int             @default(1080) // 18:00
   nextCheckInAt DateTime?
+  reportDeadlineMinutes Int      @default(5) // Дедлайн на сдачу отчета, минуты
   createdAt     DateTime         @default(now())
   
   zones         ZoneEmployee[]
@@ -61,6 +62,7 @@ model CheckInRequest {
   requestedAt DateTime         @default(now())
   status      CheckInStatus     @default(PENDING)
   telegramMessageId Int?        // ID сообщения в Telegram для обновления после завершения чекинга
+  expiresAt   DateTime?         // Дедлайн на сдачу отчета
   
   user        User              @relation(fields: [userId], references: [id])
   result      CheckInResult?

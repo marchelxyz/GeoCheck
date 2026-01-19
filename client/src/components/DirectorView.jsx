@@ -14,6 +14,7 @@ export default function DirectorView() {
   const [directorSettings, setDirectorSettings] = useState({
     notificationsEnabled: true,
     weeklyZoneReminderEnabled: true,
+    reportDeadlineMinutes: 5,
   });
 
   const weekDays = [
@@ -112,7 +113,24 @@ export default function DirectorView() {
       setDirectorSettings({
         notificationsEnabled: true,
         weeklyZoneReminderEnabled: true,
+        reportDeadlineMinutes: 5,
       });
+    }
+  };
+
+  const handleUpdateDirectorSetting = async (settingName, value) => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.put('/api/director/settings',
+        { [settingName]: value },
+        {
+          headers: { 'x-telegram-init-data': initData }
+        }
+      );
+      setDirectorSettings(response.data);
+    } catch (error) {
+      console.error(`Error updating ${settingName}:`, error);
+      alert(error.response?.data?.error || `Ошибка обновления настройки "${settingName}"`);
     }
   };
 
@@ -121,13 +139,13 @@ export default function DirectorView() {
       const initData = window.Telegram?.WebApp?.initData || '';
       const newValue = !directorSettings[settingName];
       
-      const response = await axios.put('/api/director/settings', 
+      const response = await axios.put('/api/director/settings',
         { [settingName]: newValue },
         {
           headers: { 'x-telegram-init-data': initData }
         }
       );
-      
+
       setDirectorSettings(response.data);
       alert(`Настройка "${settingName}" успешно обновлена.`);
     } catch (error) {
@@ -509,8 +527,36 @@ export default function DirectorView() {
         )}
         {activeTab === 'settings' && (
           <div className="bg-white rounded-lg shadow-sm p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">Настройки уведомлений директора</h2>
+            <h2 className="text-xl font-bold text-gray-800 mb-4">Настройки директора</h2>
             <div className="space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 p-4 border border-gray-200 rounded-lg">
+                <div>
+                  <p className="font-medium text-gray-800">Дедлайн на отчет</p>
+                  <p className="text-sm text-gray-500">Сколько минут у сотрудника на отправку гео и фото.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max="120"
+                    value={directorSettings.reportDeadlineMinutes ?? 5}
+                    onChange={(event) => {
+                      const nextValue = Number(event.target.value);
+                      setDirectorSettings((prev) => ({
+                        ...prev,
+                        reportDeadlineMinutes: nextValue
+                      }));
+                    }}
+                    className="w-24 rounded border border-gray-300 px-3 py-2 text-sm"
+                  />
+                  <button
+                    onClick={() => handleUpdateDirectorSetting('reportDeadlineMinutes', directorSettings.reportDeadlineMinutes)}
+                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                  >
+                    Сохранить
+                  </button>
+                </div>
+              </div>
               <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
                 <div>
                   <p className="font-medium text-gray-800">Уведомления о чекингах</p>
