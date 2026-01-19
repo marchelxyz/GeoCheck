@@ -12,6 +12,9 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [geoPermissionDenied, setGeoPermissionDenied] = useState(() => {
+    return localStorage.getItem('geoPermissionDenied') === '1';
+  });
 
   const getTelegramInitData = () => {
     return window.Telegram?.WebApp?.initData || '';
@@ -74,6 +77,11 @@ export default function CheckInInterface({ requestId, onComplete }) {
       return;
     }
 
+    if (geoPermissionDenied) {
+      setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
+      return;
+    }
+
     setLoading(true);
     setLocationError(null);
 
@@ -113,7 +121,13 @@ export default function CheckInInterface({ requestId, onComplete }) {
         }
       },
       (error) => {
-        setLocationError('Не удалось получить геолокацию. Пожалуйста, разрешите доступ к геолокации.');
+        if (error.code === error.PERMISSION_DENIED) {
+          localStorage.setItem('geoPermissionDenied', '1');
+          setGeoPermissionDenied(true);
+          setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
+        } else {
+          setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
+        }
         setLoading(false);
       },
       {

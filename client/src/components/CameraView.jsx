@@ -7,6 +7,9 @@ export default function CameraView({ onCapture, onClose, onError }) {
   const [loading, setLoading] = useState(false);
   const [permissionNeeded, setPermissionNeeded] = useState(false);
   const [cameraError, setCameraError] = useState(null);
+  const [permissionDenied, setPermissionDenied] = useState(() => {
+    return localStorage.getItem('cameraPermissionDenied') === '1';
+  });
 
   const stopStream = () => {
     if (streamRef.current) {
@@ -79,6 +82,10 @@ export default function CameraView({ onCapture, onClose, onError }) {
         : 'Не удалось получить доступ к камере. Проверьте разрешения и попробуйте снова.';
       setCameraError(message);
       setPermissionNeeded(err?.name === 'NotAllowedError');
+      if (err?.name === 'NotAllowedError') {
+        localStorage.setItem('cameraPermissionDenied', '1');
+        setPermissionDenied(true);
+      }
       onError?.(message);
       stopStream();
     } finally {
@@ -131,11 +138,15 @@ export default function CameraView({ onCapture, onClose, onError }) {
       onError?.(message);
       return undefined;
     }
-    startCamera();
+    if (!permissionDenied) {
+      startCamera();
+    } else {
+      setPermissionNeeded(true);
+    }
     return () => {
       stopStream();
     };
-  }, []);
+  }, [permissionDenied]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex flex-col items-center justify-center p-4">
@@ -167,7 +178,11 @@ export default function CameraView({ onCapture, onClose, onError }) {
       {cameraError && <p className="text-red-400 mt-4 text-center max-w-md">{cameraError}</p>}
       {permissionNeeded && (
         <button
-          onClick={startCamera}
+          onClick={() => {
+            localStorage.removeItem('cameraPermissionDenied');
+            setPermissionDenied(false);
+            startCamera();
+          }}
           className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
           disabled={loading}
         >
