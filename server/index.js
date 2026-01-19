@@ -402,6 +402,105 @@ async function checkLocationInZones(lat, lon, userId) {
   };
 }
 
+const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5]; // Пн-Пт (0 - Вс)
+const MIN_CHECKIN_MINUTES = 25;
+const MAX_CHECKIN_MINUTES = 95;
+
+function parseWorkDays(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => Number(item))
+      .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+  }
+  if (typeof value === 'string') {
+    const parsed = value
+      .split(',')
+      .map((item) => Number(item.trim()))
+      .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+    return parsed.length ? [...new Set(parsed)] : DEFAULT_WORK_DAYS;
+  }
+  return DEFAULT_WORK_DAYS;
+}
+
+function normalizeWorkWindow(startMinutes, endMinutes) {
+  const start = Number.isInteger(startMinutes) ? startMinutes : 540;
+  const end = Number.isInteger(endMinutes) ? endMinutes : 1080;
+  if (start < 0 || start >= 1440 || end <= start || end > 1440) {
+    return { startMinutes: 540, endMinutes: 1080 };
+  }
+  return { startMinutes: start, endMinutes: end };
+}
+
+function minutesSinceMidnight(date) {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function buildTimeOnDate(date, totalMinutes) {
+  const result = new Date(date);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  result.setHours(hours, minutes, 0, 0);
+  return result;
+}
+
+function isWorkingDay(date, workDays) {
+  return workDays.includes(date.getDay());
+}
+
+function isWithinWorkWindow(date, workDays, startMinutes, endMinutes) {
+  if (!isWorkingDay(date, workDays)) return false;
+  const minutes = minutesSinceMidnight(date);
+  return minutes >= startMinutes && minutes < endMinutes;
+}
+
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function calculateNextCheckInAt(now, workDays, startMinutes, endMinutes) {
+  const normalized = normalizeWorkWindow(startMinutes, endMinutes);
+  const validWorkDays = workDays.length ? workDays : DEFAULT_WORK_DAYS;
+  const minDelayMs = MIN_CHECKIN_MINUTES * 60 * 1000;
+  const maxDelayMs = MAX_CHECKIN_MINUTES * 60 * 1000;
+
+  for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+    const candidateDate = new Date(now);
+    candidateDate.setDate(now.getDate() + dayOffset);
+    if (!isWorkingDay(candidateDate, validWorkDays)) {
+      continue;
+    }
+
+    const dayStart = buildTimeOnDate(candidateDate, normalized.startMinutes);
+    const dayEnd = buildTimeOnDate(candidateDate, normalized.endMinutes);
+
+    let windowStart = dayStart;
+    if (dayOffset === 0) {
+      const earliest = new Date(now.getTime() + minDelayMs);
+      if (earliest > windowStart) {
+        windowStart = earliest;
+      }
+    }
+
+    if (windowStart >= dayEnd) {
+      continue;
+    }
+
+    const availableMs = dayEnd.getTime() - windowStart.getTime();
+    if (availableMs < 60000) {
+      continue;
+    }
+    const maxAvailableMs = availableMs - 60000;
+    const minDelay = Math.min(minDelayMs, maxAvailableMs);
+    const maxDelay = Math.min(maxDelayMs, maxAvailableMs);
+    const randomDelayMs = randomInt(minDelay, maxDelay);
+    const next = new Date(windowStart.getTime() + randomDelayMs);
+    next.setSeconds(randomInt(5, 55), 0);
+    return next;
+  }
+
+  return null;
+}
+
 // API Routes
 
 // Register employee (only through web app)
@@ -578,6 +677,9 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
         telegramId: true,
         name: true,
         checkInsEnabled: true,
+        workDays: true,
+        workStartMinutes: true,
+        workEndMinutes: true,
         createdAt: true
       },
       orderBy: { createdAt: 'desc' }
@@ -642,7 +744,10 @@ app.put('/api/employees/:id/toggle-checkins', verifyTelegramWebApp, async (req, 
     const updatedEmployee = await prisma.user.update({
       where: { id: employeeId },
       data: {
-        checkInsEnabled: !employee.checkInsEnabled
+        checkInsEnabled: !employee.checkInsEnabled,
+        nextCheckInAt: employee.checkInsEnabled
+          ? null
+          : calculateNextCheckInAt(new Date(), parseWorkDays(employee.workDays), employee.workStartMinutes, employee.workEndMinutes)
       }
     });
 
@@ -657,6 +762,84 @@ app.put('/api/employees/:id/toggle-checkins', verifyTelegramWebApp, async (req, 
     res.json(updatedEmployee);
   } catch (error) {
     log('ERROR', 'EMPLOYEE', 'Error toggling check-ins', {
+      requestId: req.requestId,
+      directorTelegramId: req.telegramUser?.id,
+      employeeId: req.params.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update employee work schedule (Director only)
+app.put('/api/employees/:id/work-schedule', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: directorId } = req.telegramUser;
+    const { id: employeeId } = req.params;
+    const { workDays, workStartMinutes, workEndMinutes } = req.body;
+
+    log('INFO', 'EMPLOYEE', 'Update work schedule request', {
+      requestId: req.requestId,
+      directorTelegramId: directorId,
+      employeeId
+    });
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(directorId) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      log('WARN', 'EMPLOYEE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: directorId,
+        role: director?.role
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const employee = await prisma.user.findUnique({
+      where: { id: employeeId }
+    });
+
+    if (!employee || employee.role !== 'EMPLOYEE') {
+      log('WARN', 'EMPLOYEE', 'Employee not found', {
+        requestId: req.requestId,
+        directorId: director.id,
+        employeeId
+      });
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    const parsedDays = parseWorkDays(workDays);
+    if (parsedDays.length === 0) {
+      return res.status(400).json({ error: 'Необходимо выбрать хотя бы один рабочий день' });
+    }
+
+    const normalized = normalizeWorkWindow(workStartMinutes, workEndMinutes);
+
+    const updatedEmployee = await prisma.user.update({
+      where: { id: employeeId },
+      data: {
+        workDays: parsedDays.join(','),
+        workStartMinutes: normalized.startMinutes,
+        workEndMinutes: normalized.endMinutes,
+        nextCheckInAt: calculateNextCheckInAt(new Date(), parsedDays, normalized.startMinutes, normalized.endMinutes)
+      }
+    });
+
+    log('INFO', 'EMPLOYEE', 'Work schedule updated', {
+      requestId: req.requestId,
+      directorId: director.id,
+      employeeId: employee.id,
+      workDays: updatedEmployee.workDays,
+      workStartMinutes: updatedEmployee.workStartMinutes,
+      workEndMinutes: updatedEmployee.workEndMinutes
+    });
+
+    res.json(updatedEmployee);
+  } catch (error) {
+    log('ERROR', 'EMPLOYEE', 'Error updating work schedule', {
       requestId: req.requestId,
       directorTelegramId: req.telegramUser?.id,
       employeeId: req.params.id,
@@ -2064,26 +2247,27 @@ bot.on('photo', async (ctx) => {
   }
 });
 
-// Cron job for random check-ins
-cron.schedule('*/30 * * * *', async () => {
+// Cron job for randomized check-ins
+cron.schedule('* * * * *', async () => {
   const now = new Date();
-  const hour = now.getHours();
 
-  log('INFO', 'CRON', 'Random check-in cron job started', {
-    hour,
-    isWorkingHours: hour >= 9 && hour < 18
+  log('INFO', 'CRON', 'Random check-in scheduler tick', {
+    timestamp: now.toISOString()
   });
 
-  if (hour < 9 || hour >= 18) {
-    log('INFO', 'CRON', 'Outside working hours, skipping', { hour });
-    return;
-  }
-
-  // Only get employees with check-ins enabled
   const employees = await prisma.user.findMany({
-    where: { 
+    where: {
       role: 'EMPLOYEE',
       checkInsEnabled: true
+    },
+    select: {
+      id: true,
+      telegramId: true,
+      name: true,
+      workDays: true,
+      workStartMinutes: true,
+      workEndMinutes: true,
+      nextCheckInAt: true
     }
   });
 
@@ -2092,98 +2276,117 @@ cron.schedule('*/30 * * * *', async () => {
     return;
   }
 
-  log('INFO', 'CRON', 'Found employees for check-in', {
-    totalEmployees: employees.length
-  });
-
-  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-  const recentCheckIns = await prisma.checkInRequest.findMany({
+  const employeeIds = employees.map((employee) => employee.id);
+  const pendingRequests = await prisma.checkInRequest.findMany({
     where: {
-      requestedAt: { gte: twoHoursAgo },
-      status: 'COMPLETED'
+      userId: { in: employeeIds },
+      status: 'PENDING'
     },
     select: { userId: true }
   });
-
-  const recentUserIds = new Set(recentCheckIns.map(c => c.userId));
-  const availableEmployees = employees.filter(e => !recentUserIds.has(e.id));
-
-  log('INFO', 'CRON', 'Filtered available employees', {
-    totalEmployees: employees.length,
-    recentCheckIns: recentCheckIns.length,
-    availableEmployees: availableEmployees.length
-  });
-
-  if (availableEmployees.length === 0) {
-    log('INFO', 'CRON', 'No available employees, skipping', {});
-    return;
-  }
-
-  const randomEmployee = availableEmployees[Math.floor(Math.random() * availableEmployees.length)];
-
-  log('INFO', 'CRON', 'Selected random employee for check-in', {
-    employeeId: randomEmployee.id,
-    employeeName: randomEmployee.name,
-    employeeTelegramId: randomEmployee.telegramId
-  });
-
-  const checkInRequest = await prisma.checkInRequest.create({
-    data: {
-      userId: randomEmployee.id,
-      status: 'PENDING'
-    }
-  });
-
-  const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
-  try {
-    await bot.telegram.sendMessage(
-      randomEmployee.telegramId,
-      '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение и фото.',
-      Markup.inlineKeyboard([
-        [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
-      ])
-    );
-    log('INFO', 'CRON', 'Check-in notification sent to employee', {
-      employeeId: randomEmployee.id,
-      checkInRequestId: checkInRequest.id
-    });
-  } catch (error) {
-    log('ERROR', 'CRON', 'Error sending check-in notification', {
-      employeeId: randomEmployee.id,
-      employeeTelegramId: randomEmployee.telegramId,
-      error: error.message,
-      stack: error.stack
-    });
-  }
+  const pendingUserIds = new Set(pendingRequests.map((request) => request.userId));
 
   const directors = await prisma.user.findMany({
     where: { role: 'DIRECTOR' }
   });
 
-  for (const director of directors) {
-    try {
-      await bot.telegram.sendMessage(
-        director.telegramId,
-        `🔔 Запрос на проверку отправлен сотруднику ${randomEmployee.name}`
-      );
-      log('INFO', 'CRON', 'Director notified about check-in', {
-        directorId: director.id,
-        directorTelegramId: director.telegramId,
-        employeeName: randomEmployee.name
+  for (const employee of employees) {
+    const workDays = parseWorkDays(employee.workDays);
+    const normalized = normalizeWorkWindow(employee.workStartMinutes, employee.workEndMinutes);
+    let nextCheckInAt = employee.nextCheckInAt ? new Date(employee.nextCheckInAt) : null;
+
+    if (!nextCheckInAt || Number.isNaN(nextCheckInAt.getTime())) {
+      nextCheckInAt = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
+    } else if (!isWithinWorkWindow(nextCheckInAt, workDays, normalized.startMinutes, normalized.endMinutes)) {
+      nextCheckInAt = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
+    }
+
+    if (!nextCheckInAt) {
+      continue;
+    }
+
+    if (nextCheckInAt <= now) {
+      if (pendingUserIds.has(employee.id)) {
+        const rescheduled = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
+        await prisma.user.update({
+          where: { id: employee.id },
+          data: { nextCheckInAt: rescheduled }
+        });
+        continue;
+      }
+
+      log('INFO', 'CRON', 'Triggering randomized check-in', {
+        employeeId: employee.id,
+        employeeName: employee.name,
+        scheduledAt: nextCheckInAt.toISOString()
       });
-    } catch (error) {
-      log('ERROR', 'CRON', 'Error notifying director', {
-        directorId: director.id,
-        directorTelegramId: director.telegramId,
-        error: error.message
+
+      const checkInRequest = await prisma.checkInRequest.create({
+        data: {
+          userId: employee.id,
+          status: 'PENDING'
+        }
+      });
+
+      const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
+      try {
+        await bot.telegram.sendMessage(
+          employee.telegramId,
+          '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение и фото.',
+          Markup.inlineKeyboard([
+            [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
+          ])
+        );
+        log('INFO', 'CRON', 'Check-in notification sent to employee', {
+          employeeId: employee.id,
+          checkInRequestId: checkInRequest.id
+        });
+      } catch (error) {
+        log('ERROR', 'CRON', 'Error sending check-in notification', {
+          employeeId: employee.id,
+          employeeTelegramId: employee.telegramId,
+          error: error.message,
+          stack: error.stack
+        });
+      }
+
+      for (const director of directors) {
+        try {
+          await bot.telegram.sendMessage(
+            director.telegramId,
+            `🔔 Запрос на проверку отправлен сотруднику ${employee.name}`
+          );
+          log('INFO', 'CRON', 'Director notified about check-in', {
+            directorId: director.id,
+            directorTelegramId: director.telegramId,
+            employeeName: employee.name
+          });
+        } catch (error) {
+          log('ERROR', 'CRON', 'Error notifying director', {
+            directorId: director.id,
+            directorTelegramId: director.telegramId,
+            error: error.message
+          });
+        }
+      }
+
+      const rescheduled = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
+      await prisma.user.update({
+        where: { id: employee.id },
+        data: { nextCheckInAt: rescheduled }
+      });
+
+      log('INFO', 'CRON', 'Random check-in completed', {
+        employeeId: employee.id,
+        checkInRequestId: checkInRequest.id
+      });
+    } else if (!employee.nextCheckInAt || employee.nextCheckInAt.getTime() !== nextCheckInAt.getTime()) {
+      await prisma.user.update({
+        where: { id: employee.id },
+        data: { nextCheckInAt }
       });
     }
   }
-
-  log('INFO', 'CRON', 'Random check-in cron job completed', {
-    employeeId: randomEmployee.id,
-    checkInRequestId: checkInRequest.id
-  });
 });
 
 // Cron job for cleaning up old photos (older than 6 months)

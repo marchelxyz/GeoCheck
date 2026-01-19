@@ -5,6 +5,16 @@ import EmployeeView from './components/EmployeeView';
 import CheckInInterface from './components/CheckInInterface';
 import Loading from './components/Loading';
 
+const isDesktopPlatform = () => {
+  const platform = window.Telegram?.WebApp?.platform;
+  const desktopPlatforms = ['windows', 'macos', 'linux', 'tdesktop', 'web', 'weba', 'webk'];
+  if (platform) {
+    return desktopPlatforms.includes(platform);
+  }
+  const ua = navigator.userAgent.toLowerCase();
+  return /windows|macintosh|linux/.test(ua) && !/android|iphone|ipad|mobile/.test(ua);
+};
+
 function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
@@ -21,6 +31,36 @@ function App() {
     }
     
     initTelegramWebApp();
+  }, []);
+
+  useEffect(() => {
+    const preventGestureZoom = (event) => {
+      event.preventDefault();
+    };
+    const preventCtrlZoom = (event) => {
+      if (event.ctrlKey) {
+        event.preventDefault();
+      }
+    };
+    const preventKeyZoom = (event) => {
+      if ((event.ctrlKey || event.metaKey) && ['+', '-', '=', '0'].includes(event.key)) {
+        event.preventDefault();
+      }
+    };
+
+    document.addEventListener('gesturestart', preventGestureZoom);
+    document.addEventListener('gesturechange', preventGestureZoom);
+    document.addEventListener('gestureend', preventGestureZoom);
+    window.addEventListener('wheel', preventCtrlZoom, { passive: false });
+    window.addEventListener('keydown', preventKeyZoom);
+
+    return () => {
+      document.removeEventListener('gesturestart', preventGestureZoom);
+      document.removeEventListener('gesturechange', preventGestureZoom);
+      document.removeEventListener('gestureend', preventGestureZoom);
+      window.removeEventListener('wheel', preventCtrlZoom);
+      window.removeEventListener('keydown', preventKeyZoom);
+    };
   }, []);
 
   const getTelegramInitData = () => {
@@ -141,6 +181,20 @@ function App() {
 
   // Если есть requestId в URL, показываем интерфейс проверки
   // Не ждем загрузки пользователя, так как CheckInInterface может работать независимо
+  if (requestId && isDesktopPlatform()) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
+          <div className="text-4xl mb-4">📵</div>
+          <h1 className="text-xl font-bold text-gray-800 mb-2">Проверка доступна только на мобильном</h1>
+          <p className="text-gray-600">
+            Откройте запрос на проверку через мобильное приложение Telegram.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (requestId) {
     // Если еще идет загрузка, показываем Loading
     if (loading) {
@@ -201,6 +255,20 @@ function App() {
               ⚠️ Приложение должно быть открыто через Telegram бота
             </p>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  if (role === 'EMPLOYEE' && isDesktopPlatform()) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
+          <div className="text-4xl mb-4">🚫</div>
+          <h1 className="text-xl font-bold text-gray-800 mb-2">Доступ с ПК ограничен</h1>
+          <p className="text-gray-600">
+            Для сотрудников приложение доступно только на мобильных устройствах через Telegram.
+          </p>
         </div>
       </div>
     );
