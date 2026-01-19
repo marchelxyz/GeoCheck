@@ -23,10 +23,10 @@ html, body, #root {
 
 /* Make Leaflet attribution less intrusive while keeping it visible */
 .leaflet-control-attribution {
-  font-size: 10px;
-  opacity: 0.7;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.75);
+  font-size: 8px;
+  opacity: 0.4;
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .leaflet-control-attribution a {
