@@ -3,7 +3,7 @@ import { Telegraf, Markup } from 'telegraf';
 import cron from 'node-cron';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import crypto from 'crypto';
 import multer from 'multer';
 import fs from 'fs';
@@ -74,7 +74,7 @@ async function getMissingTables() {
     SELECT table_name
     FROM information_schema.tables
     WHERE table_schema = 'public'
-      AND table_name IN (${REQUIRED_TABLES})
+      AND table_name IN (${Prisma.join(REQUIRED_TABLES)})
   `;
   const existing = new Set(rows.map((row) => row.table_name));
   return REQUIRED_TABLES.filter((table) => !existing.has(table));
