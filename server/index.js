@@ -61,6 +61,73 @@ function maskDatabaseUrl(url) {
   }
 }
 
+const REQUIRED_TABLES = [
+  'users',
+  'zones',
+  'zone_employees',
+  'check_in_requests',
+  'check_in_results'
+];
+
+async function getMissingTables() {
+  const rows = await prisma.$queryRaw`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name IN (${REQUIRED_TABLES})
+  `;
+  const existing = new Set(rows.map((row) => row.table_name));
+  return REQUIRED_TABLES.filter((table) => !existing.has(table));
+}
+
+async function ensureSchema() {
+  try {
+    const missing = await getMissingTables();
+    if (missing.length === 0) {
+      log('INFO', 'MIGRATION', 'All required tables exist', {});
+      return true;
+    }
+
+    log('WARN', 'MIGRATION', 'Missing tables detected, applying schema', {
+      missingTables: missing
+    });
+
+    const { spawn } = await import('child_process');
+    const result = await new Promise((resolve) => {
+      const process = spawn('npx', ['prisma', 'db', 'push', '--schema=../prisma/schema.prisma', '--accept-data-loss'], {
+        stdio: 'inherit',
+        cwd: '/app/server',
+        shell: true
+      });
+
+      process.on('close', (code) => {
+        resolve(code === 0);
+      });
+
+      process.on('error', () => resolve(false));
+    });
+
+    if (!result) {
+      log('ERROR', 'MIGRATION', 'Schema apply failed while ensuring tables');
+      return false;
+    }
+
+    const missingAfter = await getMissingTables();
+    if (missingAfter.length > 0) {
+      log('ERROR', 'MIGRATION', 'Tables still missing after schema apply', {
+        missingTables: missingAfter
+      });
+      return false;
+    }
+
+    log('INFO', 'MIGRATION', 'Schema ensured successfully');
+    return true;
+  } catch (error) {
+    log('ERROR', 'MIGRATION', 'Error ensuring schema', { error: error.message });
+    return false;
+  }
+}
+
 // Run database migrations
 async function runMigrations(maxRetries = 15, delay = 3000) {
   log('INFO', 'MIGRATION', 'Starting database migrations', { maxRetries, delay });
@@ -2571,6 +2638,8 @@ async function startBot() {
   if (!migrationsOk) {
     log('ERROR', 'STARTUP', 'Failed to run database migrations');
     log('WARN', 'STARTUP', 'Application will continue, but database operations may fail');
+  } else {
+    await ensureSchema();
   }
 
   if (process.env.YC_S3_BUCKET) {
