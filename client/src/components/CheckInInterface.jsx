@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
+import CameraView from './CameraView';
 
 export default function CheckInInterface({ requestId, onComplete }) {
   const [locationSent, setLocationSent] = useState(false);
@@ -10,32 +11,10 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const [distanceToZone, setDistanceToZone] = useState(null);
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const streamRef = useRef(null);
-  const fileInputRef = useRef(null);
 
   const getTelegramInitData = () => {
     return window.Telegram?.WebApp?.initData || '';
   };
-
-  const openNativeCamera = () => {
-    if (!fileInputRef.current) {
-      return false;
-    }
-    fileInputRef.current.value = '';
-    fileInputRef.current.click();
-    return true;
-  };
-
-  useEffect(() => {
-    return () => {
-      // Останавливаем поток камеры при размонтировании компонента
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, []);
 
   // Проверяем завершение чекинга и закрываем мини-приложение
   useEffect(() => {
@@ -81,179 +60,19 @@ export default function CheckInInterface({ requestId, onComplete }) {
       if (window.Telegram?.WebApp) {
         window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
       }
+      return true;
     } catch (error) {
       console.error('Error sending photo:', error);
       setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const startCamera = async () => {
-    setLoading(true);
-    setPhotoError(null);
-    
-    try {
-      // Используем фронтальную камеру для мобильных устройств
-      const constraints = {
-        video: {
-          facingMode: { ideal: 'user' }, // Фронтальная камера
-          width: { ideal: 1280, min: 640 },
-          height: { ideal: 720, min: 480 }
-        }
-      };
-
-      // Сначала пробуем с идеальными параметрами
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      } catch (err) {
-        // Если не получилось, пробуем упрощенную конфигурацию
-        console.warn('Failed with ideal constraints, trying simplified:', err);
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: 'user'
-            }
-          });
-        } catch (err2) {
-          // Если и это не сработало, пробуем без указания камеры
-          console.warn('Failed with user camera, trying any camera:', err2);
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: true
-          });
-        }
-      }
-      
-      if (!stream) {
-        throw new Error('Не удалось получить поток камеры');
-      }
-
-      streamRef.current = stream;
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        
-        // Ждем, пока видео элемент будет готов
-        await new Promise((resolve, reject) => {
-          const video = videoRef.current;
-          
-          const onLoadedMetadata = () => {
-            video.removeEventListener('loadedmetadata', onLoadedMetadata);
-            video.removeEventListener('error', onError);
-            resolve();
-          };
-          
-          const onError = (err) => {
-            video.removeEventListener('loadedmetadata', onLoadedMetadata);
-            video.removeEventListener('error', onError);
-            reject(err);
-          };
-          
-          video.addEventListener('loadedmetadata', onLoadedMetadata);
-          video.addEventListener('error', onError);
-          
-          // Пытаемся запустить воспроизведение
-          video.play().catch(reject);
-        });
-        
-        setCameraActive(true);
-        return true;
-      } else {
-        throw new Error('Video элемент не найден');
-      }
-    } catch (err) {
-      console.error('Error accessing camera with MediaDevices API:', err);
-      setPhotoError('Не удалось получить доступ к камере. Открываем стандартную камеру Telegram.');
-      
-      // Останавливаем поток, если он был создан
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
       return false;
     } finally {
       setLoading(false);
     }
   };
 
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setCameraActive(false);
-  };
-
-  const takePhoto = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    setLoading(true);
-    setPhotoError(null);
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    // Ждем, пока видео будет готово
-    if (video.readyState < 2) {
-      await new Promise((resolve) => {
-        if (video.readyState >= 2) {
-          resolve();
-          return;
-        }
-        const onLoadedMetadata = () => {
-          video.removeEventListener('loadedmetadata', onLoadedMetadata);
-          resolve();
-        };
-        video.addEventListener('loadedmetadata', onLoadedMetadata);
-      });
-    }
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext('2d');
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    canvas.toBlob(async (blob) => {
-      if (!blob) {
-        setPhotoError('Не удалось создать файл изображения.');
-        setLoading(false);
-        return;
-      }
-
-      const file = new File([blob], 'checkin_photo.jpg', { type: 'image/jpeg' });
-      await uploadPhoto(file);
-      stopCamera();
-    }, 'image/jpeg', 0.9);
-  };
-
   const handleSendPhoto = async () => {
     setPhotoError(null);
-
-    const platform = window.Telegram?.WebApp?.platform;
-    const preferNative = platform === 'android' || platform === 'ios';
-
-    if (preferNative) {
-      const opened = openNativeCamera();
-      if (opened) {
-        return;
-      }
-    }
-
-    if (navigator.mediaDevices?.getUserMedia) {
-      const started = await startCamera();
-      if (started) {
-        return;
-      }
-    }
-
-    const opened = openNativeCamera();
-    if (!opened) {
-      setPhotoError('Не удалось открыть камеру. Пожалуйста, обновите Telegram и повторите попытку.');
-    }
+    setCameraActive(true);
   };
 
   const handleSendLocation = async () => {
@@ -314,49 +133,18 @@ export default function CheckInInterface({ requestId, onComplete }) {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }}
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) {
-            uploadPhoto(file);
-          }
-        }}
-      />
       {/* Модальное окно с камерой */}
       {cameraActive && (
-        <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex flex-col items-center justify-center p-4">
-          <video 
-            ref={videoRef} 
-            className="max-w-full max-h-[70vh] object-contain rounded-lg"
-            autoPlay 
-            playsInline
-            muted
-          ></video>
-          <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
-          <div className="mt-4 flex space-x-4">
-            <button
-              onClick={takePhoto}
-              className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-medium rounded-full shadow-lg transition-colors"
-              disabled={loading}
-            >
-              📷 Сделать фото
-            </button>
-            <button
-              onClick={stopCamera}
-              className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-full shadow-lg transition-colors"
-              disabled={loading}
-            >
-              ✕ Отмена
-            </button>
-          </div>
-          {loading && <p className="text-white mt-4">Загрузка...</p>}
-          {photoError && <p className="text-red-400 mt-4 text-center max-w-md">{photoError}</p>}
-        </div>
+        <CameraView
+          onCapture={async (file) => {
+            const ok = await uploadPhoto(file);
+            if (ok) {
+              setCameraActive(false);
+            }
+          }}
+          onClose={() => setCameraActive(false)}
+          onError={(message) => setPhotoError(message)}
+        />
       )}
 
       <div className="max-w-md mx-auto mt-8">
