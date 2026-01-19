@@ -1893,8 +1893,16 @@ app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
     }
     if (startDate || endDate) {
       where.requestedAt = {};
-      if (startDate) where.requestedAt.gte = new Date(startDate);
-      if (endDate) where.requestedAt.lte = new Date(endDate);
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        where.requestedAt.gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        where.requestedAt.lte = end;
+      }
     }
 
     const checkIns = await prisma.checkInRequest.findMany({
