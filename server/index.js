@@ -7,6 +7,7 @@ import { PrismaClient } from '@prisma/client';
 import crypto from 'crypto';
 import multer from 'multer';
 import fs from 'fs';
+import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getPhotoUrl, deletePhoto, testS3Connection } from './s3Service.js';
@@ -1711,6 +1712,79 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
     return res.status(404).json({ error: 'Photo not found for this check-in' });
   } catch (error) {
     log('ERROR', 'CHECKIN', 'Error getting photo URL', {
+      requestId: req.requestId,
+      checkInRequestId: req.params.id,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get photo file for check-in result (Director only)
+app.get('/api/check-ins/:id/photo/file', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { id: requestId } = req.params;
+
+    log('INFO', 'CHECKIN', 'Get photo file request', {
+      requestId: req.requestId,
+      checkInRequestId: requestId,
+      telegramId: id
+    });
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+
+    if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'CHECKIN', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: id,
+        role: user?.role
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const result = await prisma.checkInResult.findUnique({
+      where: { requestId }
+    });
+
+    if (!result || !result.photoPath) {
+      log('WARN', 'CHECKIN', 'Photo file not found for check-in', {
+        requestId: req.requestId,
+        checkInRequestId: requestId
+      });
+      return res.status(404).json({ error: 'Photo not found for this check-in' });
+    }
+
+    const signedUrl = await getPhotoUrl(result.photoPath, 300);
+    const photoResponse = await fetch(signedUrl);
+
+    if (!photoResponse.ok) {
+      log('ERROR', 'CHECKIN', 'Failed to fetch photo from storage', {
+        requestId: req.requestId,
+        checkInRequestId: requestId,
+        status: photoResponse.status
+      });
+      return res.status(502).json({ error: 'Failed to fetch photo from storage' });
+    }
+
+    const contentType = photoResponse.headers.get('content-type') || 'image/jpeg';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+
+    if (photoResponse.body) {
+      const stream = Readable.fromWeb(photoResponse.body);
+      stream.pipe(res);
+      return;
+    }
+
+    const buffer = Buffer.from(await photoResponse.arrayBuffer());
+    res.end(buffer);
+  } catch (error) {
+    log('ERROR', 'CHECKIN', 'Error getting photo file', {
       requestId: req.requestId,
       checkInRequestId: req.params.id,
       telegramId: req.telegramUser?.id,
