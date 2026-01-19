@@ -316,24 +316,31 @@ function PhotoDisplay({ requestId }) {
     const loadPhoto = async () => {
       try {
         const initData = window.Telegram?.WebApp?.initData || '';
-        const response = await axios.get(`/api/check-ins/${requestId}/photo`, {
-          headers: { 'x-telegram-init-data': initData }
+        const response = await axios.get(`/api/check-ins/${requestId}/photo/file`, {
+          headers: { 'x-telegram-init-data': initData },
+          responseType: 'blob'
         });
-        
-        if (response.data.url) {
-          setPhotoUrl(response.data.url);
-        } else if (response.data.fileId) {
-          // Fallback to Telegram file ID
-          setPhotoUrl(`https://api.telegram.org/file/bot${import.meta.env.VITE_BOT_TOKEN || ''}/${response.data.fileId}`);
-        }
+
+        const objectUrl = URL.createObjectURL(response.data);
+        setPhotoUrl(objectUrl);
+        return objectUrl;
       } catch (error) {
         console.error('Error loading photo:', error);
+        return null;
       } finally {
         setLoading(false);
       }
     };
 
-    loadPhoto();
+    let activeUrl = null;
+    loadPhoto().then((url) => {
+      activeUrl = url;
+    });
+    return () => {
+      if (activeUrl) {
+        URL.revokeObjectURL(activeUrl);
+      }
+    };
   }, [requestId]);
 
   if (loading) {
