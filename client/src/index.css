@@ -24,7 +24,7 @@ html, body, #root {
 /* Make Leaflet attribution less intrusive while keeping it visible */
 .leaflet-control-attribution {
   font-size: 8px;
-  opacity: 0.4;
+  opacity: 0.03;
   padding: 1px 4px;
   background: rgba(255, 255, 255, 0.5);
 }
