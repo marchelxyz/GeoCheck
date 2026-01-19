@@ -1033,13 +1033,32 @@ app.delete('/api/employees/:id', verifyTelegramWebApp, async (req, res) => {
       }
     }
 
+    const zoneLinks = await prisma.zoneEmployee.findMany({
+      where: { userId: employeeId },
+      select: {
+        zoneId: true,
+        zone: { select: { isShared: true, createdBy: true } }
+      }
+    });
+    const sharedZoneIds = zoneLinks
+      .filter((link) => link.zone?.isShared)
+      .map((link) => link.zoneId);
+    const singleZoneIds = zoneLinks
+      .filter((link) => !link.zone?.isShared)
+      .map((link) => link.zoneId);
+    const createdSingleZones = zoneLinks
+      .filter((link) => !link.zone?.isShared && link.zone?.createdBy === employeeId)
+      .map((link) => link.zoneId);
+
     await prisma.$transaction([
       prisma.checkInResult.deleteMany({
         where: { requestId: { in: requests.map((item) => item.id) } }
       }),
       prisma.checkInRequest.deleteMany({ where: { userId: employeeId } }),
       prisma.zoneEmployee.deleteMany({ where: { userId: employeeId } }),
-      prisma.zone.deleteMany({ where: { createdBy: employeeId } }),
+      prisma.zoneEmployee.deleteMany({ where: { zoneId: { in: singleZoneIds } } }),
+      prisma.zone.deleteMany({ where: { id: { in: singleZoneIds } } }),
+      prisma.zone.deleteMany({ where: { id: { in: createdSingleZones } } }),
       prisma.user.delete({ where: { id: employeeId } })
     ]);
 
@@ -1298,7 +1317,8 @@ app.get('/api/zones/my', verifyTelegramWebApp, async (req, res) => {
 app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
-    const { name, latitude, longitude, radius, employeeIds } = req.body;
+    const { name, latitude, longitude, radius, employeeIds, isShared } = req.body;
+    const sharedZone = Boolean(isShared);
 
     log('INFO', 'ZONE', 'Create zone request', {
       requestId: req.requestId,
@@ -1366,6 +1386,10 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
       return res.status(400).json({ error: 'At least one employee must be assigned to the zone' });
     }
 
+    if (!sharedZone && finalEmployeeIds.length !== 1) {
+      return res.status(400).json({ error: 'Single zone must have exactly one employee' });
+    }
+
     log('INFO', 'ZONE', 'Creating zone', {
       requestId: req.requestId,
       directorId: user.id,
@@ -1382,6 +1406,7 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
         latitude: parseFloat(latitude),
         longitude: parseFloat(longitude),
         radius: parseFloat(radius),
+        isShared: sharedZone,
         createdBy: user.id,
         employees: {
           create: finalEmployeeIds.map(empId => ({
@@ -1454,6 +1479,19 @@ app.put('/api/zones/:id/employees', verifyTelegramWebApp, async (req, res) => {
         providedEmployeeIds: employeeIds
       });
       return res.status(400).json({ error: 'employeeIds must be an array' });
+    }
+
+    const zoneMeta = await prisma.zone.findUnique({
+      where: { id: zoneId },
+      select: { isShared: true }
+    });
+
+    if (!zoneMeta) {
+      return res.status(404).json({ error: 'Zone not found' });
+    }
+
+    if (!zoneMeta.isShared && employeeIds.length !== 1) {
+      return res.status(400).json({ error: 'Single zone must have exactly one employee' });
     }
 
     log('INFO', 'ZONE', 'Updating zone employees', {
