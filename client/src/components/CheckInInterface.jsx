@@ -13,9 +13,19 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const getTelegramInitData = () => {
     return window.Telegram?.WebApp?.initData || '';
+  };
+
+  const openNativeCamera = () => {
+    if (!fileInputRef.current) {
+      return false;
+    }
+    fileInputRef.current.value = '';
+    fileInputRef.current.click();
+    return true;
   };
 
   useEffect(() => {
@@ -148,31 +158,22 @@ export default function CheckInInterface({ requestId, onComplete }) {
         });
         
         setCameraActive(true);
-        setLoading(false);
+        return true;
       } else {
         throw new Error('Video элемент не найден');
       }
     } catch (err) {
       console.error('Error accessing camera with MediaDevices API:', err);
-      setPhotoError('Не удалось получить доступ к камере. Пожалуйста, разрешите доступ к камере в настройках браузера.');
-      setLoading(false);
+      setPhotoError('Не удалось получить доступ к камере. Открываем стандартную камеру Telegram.');
       
       // Останавливаем поток, если он был создан
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
       }
-      
-      // Не используем fallback на input, так как он открывает галерею в Telegram
-      // Вместо этого показываем сообщение пользователю
-      if (window.Telegram?.WebApp) {
-        window.Telegram.WebApp.showAlert(
-          'Не удалось открыть камеру. Пожалуйста:\n\n' +
-          '1. Разрешите доступ к камере в настройках браузера\n' +
-          '2. Убедитесь, что камера не используется другим приложением\n' +
-          '3. Попробуйте перезагрузить страницу'
-        );
-      }
+      return false;
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -230,17 +231,19 @@ export default function CheckInInterface({ requestId, onComplete }) {
   };
 
   const handleSendPhoto = async () => {
-    // Проверяем поддержку MediaDevices API
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setPhotoError('Ваш браузер не поддерживает доступ к камере. Пожалуйста, используйте современный браузер или обновите Telegram.');
-      if (window.Telegram?.WebApp) {
-        window.Telegram.WebApp.showAlert('Ваш браузер не поддерживает доступ к камере. Пожалуйста, обновите Telegram до последней версии.');
+    // Прямой вызов камеры через MediaDevices API
+    if (navigator.mediaDevices?.getUserMedia) {
+      const started = await startCamera();
+      if (started) {
+        return;
       }
-      return;
     }
 
-    // Прямой вызов камеры через MediaDevices API
-    await startCamera();
+    // Фоллбэк на нативную камеру Telegram через input capture
+    const opened = openNativeCamera();
+    if (!opened) {
+      setPhotoError('Не удалось открыть камеру. Пожалуйста, обновите Telegram и повторите попытку.');
+    }
   };
 
   const handleSendLocation = async () => {
@@ -301,6 +304,19 @@ export default function CheckInInterface({ requestId, onComplete }) {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            uploadPhoto(file);
+          }
+        }}
+      />
       {/* Модальное окно с камерой */}
       {cameraActive && (
         <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex flex-col items-center justify-center p-4">
