@@ -1642,8 +1642,8 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
       try {
         const { uploadPhoto } = await import('./s3Service.js');
         const fileName = `check-in-${pendingRequest.id}-${Date.now()}.jpg`;
-        photoPath = `photos/${fileName}`;
-        photoUrl = await uploadPhoto(req.file.path, photoPath);
+        photoPath = fileName;
+        photoUrl = await uploadPhoto(req.file.path, fileName, req.file.mimetype || 'image/jpeg');
         
         // Удаляем временный файл
         fs.unlinkSync(req.file.path);
@@ -1769,8 +1769,11 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
     }
 
     if (result.photoPath) {
+      const normalizedPath = result.photoPath.startsWith('photos/')
+        ? result.photoPath.slice('photos/'.length)
+        : result.photoPath;
       try {
-        const photoUrl = await getPhotoUrl(result.photoPath, 3600);
+        const photoUrl = await getPhotoUrl(normalizedPath, 3600);
         log('INFO', 'CHECKIN', 'Photo URL retrieved from S3', {
           requestId: req.requestId,
           checkInRequestId: requestId,
@@ -1859,7 +1862,10 @@ app.get('/api/check-ins/:id/photo/file', verifyTelegramWebApp, async (req, res) 
       return res.status(404).json({ error: 'Photo not found for this check-in' });
     }
 
-    const signedUrl = await getPhotoUrl(result.photoPath, 300);
+    const normalizedPath = result.photoPath.startsWith('photos/')
+      ? result.photoPath.slice('photos/'.length)
+      : result.photoPath;
+    const signedUrl = await getPhotoUrl(normalizedPath, 300);
     const photoResponse = await fetch(signedUrl);
 
     if (!photoResponse.ok) {
@@ -2586,6 +2592,30 @@ cron.schedule('* * * * *', async () => {
         data: { nextCheckInAt }
       });
     }
+  }
+});
+
+// Cleanup broken photos (daily)
+cron.schedule('15 4 * * *', async () => {
+  try {
+    log('INFO', 'CRON', 'Starting broken photo cleanup');
+    const { cleanupPhotos } = await import('./s3Service.js');
+    const result = await cleanupPhotos({ minSizeBytes: 1024 });
+    log('INFO', 'CRON', 'Broken photo cleanup finished', result);
+  } catch (error) {
+    log('ERROR', 'CRON', 'Broken photo cleanup failed', { error: error.message });
+  }
+});
+
+// Cleanup photos older than 6 months (runs twice a year on Jan 1 and Jul 1)
+cron.schedule('0 5 1 1,7 *', async () => {
+  try {
+    log('INFO', 'CRON', 'Starting old photo cleanup');
+    const { cleanupPhotos } = await import('./s3Service.js');
+    const result = await cleanupPhotos({ olderThanDays: 182 });
+    log('INFO', 'CRON', 'Old photo cleanup finished', result);
+  } catch (error) {
+    log('ERROR', 'CRON', 'Old photo cleanup failed', { error: error.message });
   }
 });
 
