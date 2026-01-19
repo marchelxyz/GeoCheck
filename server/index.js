@@ -1004,10 +1004,44 @@ app.delete('/api/employees/:id', verifyTelegramWebApp, async (req, res) => {
       return res.status(404).json({ error: 'Employee not found' });
     }
 
-    // Delete employee (cascade will handle related records)
-    await prisma.user.delete({
-      where: { id: employeeId }
+    const requests = await prisma.checkInRequest.findMany({
+      where: { userId: employeeId },
+      include: {
+        result: {
+          select: { photoPath: true }
+        }
+      }
     });
+    const photoPaths = requests
+      .map((request) => request.result?.photoPath)
+      .filter(Boolean);
+
+    if (photoPaths.length > 0) {
+      const { deletePhotoByKey } = await import('./s3Service.js');
+      for (const path of photoPaths) {
+        const key = path.startsWith('photos/') ? path : `photos/${path}`;
+        try {
+          await deletePhotoByKey(key);
+        } catch (error) {
+          log('WARN', 'EMPLOYEE', 'Failed to delete photo from storage', {
+            requestId: req.requestId,
+            employeeId,
+            photoPath: path,
+            error: error.message
+          });
+        }
+      }
+    }
+
+    await prisma.$transaction([
+      prisma.checkInResult.deleteMany({
+        where: { requestId: { in: requests.map((item) => item.id) } }
+      }),
+      prisma.checkInRequest.deleteMany({ where: { userId: employeeId } }),
+      prisma.zoneEmployee.deleteMany({ where: { userId: employeeId } }),
+      prisma.zone.deleteMany({ where: { createdBy: employeeId } }),
+      prisma.user.delete({ where: { id: employeeId } })
+    ]);
 
     log('INFO', 'EMPLOYEE', 'Employee deleted successfully', {
       requestId: req.requestId,
@@ -2161,8 +2195,8 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       });
     }
 
-    const deadlineMinutes = Number.isInteger(user.reportDeadlineMinutes)
-      ? user.reportDeadlineMinutes
+    const deadlineMinutes = Number.isInteger(director.reportDeadlineMinutes)
+      ? director.reportDeadlineMinutes
       : 5;
     const checkInRequest = await prisma.checkInRequest.create({
       data: {
