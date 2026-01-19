@@ -28,18 +28,27 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const [radius, setRadius] = useState(100);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
+  const [isShared, setIsShared] = useState(false);
   const defaultCenter = [56.2965, 44.0020];
   const [center, setCenter] = useState(defaultCenter);
 
   const handleEmployeeSelect = (employee) => {
-    setSelectedEmployee(employee);
     setShowForm(false);
     setSelectedLocation(null);
+    if (isShared) {
+      setSelectedEmployeeIds((prev) => (
+        prev.includes(employee.id)
+          ? prev.filter((id) => id !== employee.id)
+          : [...prev, employee.id]
+      ));
+      return;
+    }
+    setSelectedEmployeeIds([employee.id]);
   };
 
   const handleMapClick = (latlng) => {
-    if (!selectedEmployee) {
+    if (selectedEmployeeIds.length === 0) {
       alert('Пожалуйста, сначала выберите сотрудника из списка');
       return;
     }
@@ -49,11 +58,12 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedLocation || !zoneName.trim() || !selectedEmployee) return;
+    if (!selectedLocation || !zoneName.trim() || selectedEmployeeIds.length === 0) return;
 
     setSubmitting(true);
     try {
       const initData = window.Telegram?.WebApp?.initData || '';
+      const employeeIds = isShared ? selectedEmployeeIds : [selectedEmployeeIds[0]];
       const response = await axios.post(
         '/api/zones',
         {
@@ -61,7 +71,8 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           latitude: selectedLocation.lat,
           longitude: selectedLocation.lng,
           radius: parseFloat(radius),
-          employeeIds: [selectedEmployee.id] // Assign zone to selected employee
+          isShared,
+          employeeIds
         },
         {
           headers: { 'x-telegram-init-data': initData }
@@ -73,8 +84,13 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       setZoneName('');
       setRadius(100);
       setShowForm(false);
-      setSelectedEmployee(null);
-      alert(`Зона "${zoneName}" создана и назначена сотруднику ${selectedEmployee.name}`);
+      setSelectedEmployeeIds([]);
+      if (isShared) {
+        alert(`Общая зона "${zoneName}" создана для ${employeeIds.length} сотрудников`);
+      } else {
+        const selectedEmployee = employees.find((employee) => employee.id === employeeIds[0]);
+        alert(`Зона "${zoneName}" создана и назначена сотруднику ${selectedEmployee?.name || ''}`);
+      }
     } catch (error) {
       console.error('Error creating zone:', error);
       alert(error.response?.data?.error || 'Ошибка при создании зоны');
@@ -100,14 +116,31 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const handleCancel = () => {
     setShowForm(false);
     setSelectedLocation(null);
-    setSelectedEmployee(null);
+    setSelectedEmployeeIds([]);
   };
+
+  const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeIds[0]);
 
   return (
     <div className="space-y-4">
       {/* Employee Selection Section */}
       <div className="bg-white rounded-lg shadow p-4">
-        <h2 className="text-lg font-semibold mb-4">Выберите сотрудника для назначения зоны</h2>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+          <h2 className="text-lg font-semibold">Назначение зоны</h2>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={isShared}
+              onChange={(event) => {
+                setIsShared(event.target.checked);
+                setSelectedEmployeeIds([]);
+                setSelectedLocation(null);
+                setShowForm(false);
+              }}
+            />
+            Общая зона для нескольких сотрудников
+          </label>
+        </div>
         
         {employees.length === 0 ? (
           <div className="text-center py-8">
@@ -120,13 +153,14 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
               const employeeZones = zones.filter(zone => 
                 zone.employees?.some(ze => ze.user?.id === employee.id)
               );
+              const isSelected = selectedEmployeeIds.includes(employee.id);
               
               return (
                 <button
                   key={employee.id}
                   onClick={() => handleEmployeeSelect(employee)}
                   className={`p-4 border-2 rounded-lg text-left transition-all ${
-                    selectedEmployee?.id === employee.id
+                    isSelected
                       ? 'border-blue-600 bg-blue-50'
                       : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
                   }`}
@@ -138,7 +172,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                         Зон: {employeeZones.length}
                       </p>
                     </div>
-                    {selectedEmployee?.id === employee.id && (
+                    {isSelected && (
                       <span className="text-blue-600 text-xl">✓</span>
                     )}
                   </div>
@@ -148,22 +182,32 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           </div>
         )}
 
-        {selectedEmployee && (
+        {selectedEmployeeIds.length > 0 && (
           <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
             <p className="text-sm text-blue-800">
-              <strong>Выбран:</strong> {selectedEmployee.name}
+              {isShared ? (
+                <>
+                  <strong>Выбрано сотрудников:</strong> {selectedEmployeeIds.length}
+                </>
+              ) : (
+                <>
+                  <strong>Выбран:</strong> {selectedEmployee?.name}
+                </>
+              )}
             </p>
             <p className="text-xs text-blue-600 mt-1">
-              Нажмите на карту, чтобы выбрать местоположение зоны для этого сотрудника
+              Нажмите на карту, чтобы выбрать местоположение зоны
             </p>
           </div>
         )}
       </div>
 
       {/* Zone Creation Form */}
-      {showForm && selectedLocation && selectedEmployee && (
+      {showForm && selectedLocation && selectedEmployeeIds.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="text-lg font-semibold mb-4">Создание зоны для {selectedEmployee.name}</h3>
+          <h3 className="text-lg font-semibold mb-4">
+            {isShared ? 'Создание общей зоны' : `Создание зоны для ${selectedEmployee?.name || ''}`}
+          </h3>
           
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -230,7 +274,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           
           <MapClickHandler 
             onMapClick={handleMapClick} 
-            disabled={!selectedEmployee}
+            disabled={selectedEmployeeIds.length === 0}
           />
           
           {selectedLocation && (
@@ -280,6 +324,11 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{zone.name}</span>
+                      {zone.isShared && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">
+                          Общая
+                        </span>
+                      )}
                       <span className="text-sm text-gray-600">
                         Радиус: {zone.radius}м
                       </span>

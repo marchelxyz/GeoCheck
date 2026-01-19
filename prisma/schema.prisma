@@ -35,6 +35,7 @@ model Zone {
   latitude    Float
   longitude   Float
   radius      Float
+  isShared    Boolean  @default(false) // Общая зона для нескольких сотрудников
   createdBy   String
   createdAt   DateTime @default(now())
   

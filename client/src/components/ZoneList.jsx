@@ -52,6 +52,9 @@ export default function ZoneList({ zones, onZoneDeleted }) {
                   </h3>
                   <div className="mt-2 space-y-1 text-sm text-gray-600">
                     <p>
+                      🧩 Тип: {zone.isShared ? 'Общая (несколько сотрудников)' : 'Индивидуальная'}
+                    </p>
+                    <p>
                       📍 Координаты: {zone.latitude.toFixed(6)}, {zone.longitude.toFixed(6)}
                     </p>
                     <p>
