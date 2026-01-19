@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { MapContainer, TileLayer, Marker, Circle, useMapEvents } from 'react-leaflet';
 import axios from 'axios';
 import L from 'leaflet';
@@ -29,19 +29,8 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
-  const defaultCenter = [55.7558, 37.6173];
+  const defaultCenter = [56.2965, 44.0020];
   const [center, setCenter] = useState(defaultCenter);
-
-  useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setCenter([position.coords.latitude, position.coords.longitude]);
-        },
-        () => {}
-      );
-    }
-  }, []);
 
   const handleEmployeeSelect = (employee) => {
     setSelectedEmployee(employee);
