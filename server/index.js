@@ -1033,12 +1033,20 @@ app.delete('/api/employees/:id', verifyTelegramWebApp, async (req, res) => {
       }
     }
 
+    const zoneLinks = await prisma.zoneEmployee.findMany({
+      where: { userId: employeeId },
+      select: { zoneId: true }
+    });
+    const assignedZoneIds = zoneLinks.map((link) => link.zoneId);
+
     await prisma.$transaction([
       prisma.checkInResult.deleteMany({
         where: { requestId: { in: requests.map((item) => item.id) } }
       }),
       prisma.checkInRequest.deleteMany({ where: { userId: employeeId } }),
       prisma.zoneEmployee.deleteMany({ where: { userId: employeeId } }),
+      prisma.zoneEmployee.deleteMany({ where: { zoneId: { in: assignedZoneIds } } }),
+      prisma.zone.deleteMany({ where: { id: { in: assignedZoneIds } } }),
       prisma.zone.deleteMany({ where: { createdBy: employeeId } }),
       prisma.user.delete({ where: { id: employeeId } })
     ]);
