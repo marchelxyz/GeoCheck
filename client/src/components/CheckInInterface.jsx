@@ -11,6 +11,10 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const [distanceToZone, setDistanceToZone] = useState(null);
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [geoPermissionDenied, setGeoPermissionDenied] = useState(() => {
+    return localStorage.getItem('geoPermissionDenied') === '1';
+  });
 
   const getTelegramInitData = () => {
     return window.Telegram?.WebApp?.initData || '';
@@ -19,22 +23,17 @@ export default function CheckInInterface({ requestId, onComplete }) {
   // Проверяем завершение чекинга и закрываем мини-приложение
   useEffect(() => {
     if (locationSent && photoSent) {
-      // Небольшая задержка перед закрытием, чтобы пользователь увидел сообщение о завершении
-      const timer = setTimeout(() => {
-        if (window.Telegram?.WebApp) {
-          window.Telegram.WebApp.close();
-        }
-        if (onComplete) {
-          onComplete();
-        }
-      }, 2000); // 2 секунды задержки
-
-      return () => clearTimeout(timer);
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.close();
+      }
+      if (onComplete) {
+        onComplete();
+      }
     }
   }, [locationSent, photoSent, onComplete]);
 
   const uploadPhoto = async (file) => {
-    setLoading(true);
+    setUploadingPhoto(true);
     setPhotoError(null);
 
     try {
@@ -57,16 +56,13 @@ export default function CheckInInterface({ requestId, onComplete }) {
       );
 
       setPhotoSent(true);
-      if (window.Telegram?.WebApp) {
-        window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
-      }
       return true;
     } catch (error) {
       console.error('Error sending photo:', error);
       setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
       return false;
     } finally {
-      setLoading(false);
+      setUploadingPhoto(false);
     }
   };
 
@@ -78,6 +74,11 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const handleSendLocation = async () => {
     if (!navigator.geolocation) {
       setLocationError('Геолокация не поддерживается вашим браузером');
+      return;
+    }
+
+    if (geoPermissionDenied) {
+      setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
       return;
     }
 
@@ -120,7 +121,13 @@ export default function CheckInInterface({ requestId, onComplete }) {
         }
       },
       (error) => {
-        setLocationError('Не удалось получить геолокацию. Пожалуйста, разрешите доступ к геолокации.');
+        if (error.code === error.PERMISSION_DENIED) {
+          localStorage.setItem('geoPermissionDenied', '1');
+          setGeoPermissionDenied(true);
+          setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
+        } else {
+          setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
+        }
         setLoading(false);
       },
       {
@@ -137,14 +144,20 @@ export default function CheckInInterface({ requestId, onComplete }) {
       {cameraActive && (
         <CameraView
           onCapture={async (file) => {
-            const ok = await uploadPhoto(file);
-            if (ok) {
-              setCameraActive(false);
-            }
+            setCameraActive(false);
+            await uploadPhoto(file);
           }}
           onClose={() => setCameraActive(false)}
           onError={(message) => setPhotoError(message)}
         />
+      )}
+      {uploadingPhoto && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-xl px-6 py-4 shadow-lg flex items-center gap-3">
+            <div className="h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            <span className="text-sm text-gray-700">Загрузка фото...</span>
+          </div>
+        </div>
       )}
 
       <div className="max-w-md mx-auto mt-8">
@@ -208,7 +221,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           <div className="space-y-3">
             <button
               onClick={handleSendLocation}
-              disabled={locationSent || loading}
+              disabled={locationSent || loading || uploadingPhoto}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -220,7 +233,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
 
             <button
               onClick={handleSendPhoto}
-              disabled={photoSent || loading || cameraActive}
+              disabled={photoSent || loading || cameraActive || uploadingPhoto}
               className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -234,7 +247,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           {locationSent && photoSent && (
             <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
               <p className="text-sm text-green-800 text-center">
-                ✅ Проверка завершена! Все данные отправлены. Приложение закроется автоматически...
+                ✅ Проверка завершена! Приложение закроется автоматически.
               </p>
             </div>
           )}
