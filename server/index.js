@@ -1420,17 +1420,12 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
 
     const locationCheck = await checkLocationInZones(latitude, longitude, user.id);
 
-    await prisma.checkInRequest.update({
-      where: { id: pendingRequest.id },
-      data: { status: 'COMPLETED' }
-    });
-
     const existingResult = await prisma.checkInResult.findUnique({
       where: { requestId: pendingRequest.id }
     });
 
     if (existingResult) {
-      await prisma.checkInResult.update({
+      const updatedResult = await prisma.checkInResult.update({
         where: { id: existingResult.id },
         data: {
           locationLat: latitude,
@@ -1439,6 +1434,12 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
           distanceToZone: locationCheck.distanceToZone
         }
       });
+      if (updatedResult.photoPath || updatedResult.photoFileId || updatedResult.photoUrl) {
+        await prisma.checkInRequest.update({
+          where: { id: pendingRequest.id },
+          data: { status: 'COMPLETED' }
+        });
+      }
       log('INFO', 'CHECKIN', 'Check-in result updated', {
         requestId: req.requestId,
         userId: user.id,
@@ -1562,7 +1563,7 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
     });
 
     if (result) {
-      await prisma.checkInResult.update({
+      const updatedResult = await prisma.checkInResult.update({
         where: { id: result.id },
         data: {
           photoFileId: photoFileId || result.photoFileId,
@@ -1570,6 +1571,13 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
           photoUrl: photoUrl || result.photoUrl
         }
       });
+      const hasLocation = updatedResult.locationLat !== 0 || updatedResult.locationLon !== 0;
+      if (hasLocation) {
+        await prisma.checkInRequest.update({
+          where: { id: pendingRequest.id },
+          data: { status: 'COMPLETED' }
+        });
+      }
       log('INFO', 'CHECKIN', 'Photo added to existing check-in result', {
         requestId: req.requestId,
         userId: user.id,
@@ -1577,7 +1585,7 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
         resultId: result.id
       });
     } else {
-      await prisma.checkInResult.create({
+      const createdResult = await prisma.checkInResult.create({
         data: {
           requestId: pendingRequest.id,
           locationLat: 0,
@@ -1588,6 +1596,12 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
           photoUrl
         }
       });
+      if (createdResult.locationLat !== 0 || createdResult.locationLon !== 0) {
+        await prisma.checkInRequest.update({
+          where: { id: pendingRequest.id },
+          data: { status: 'COMPLETED' }
+        });
+      }
       log('INFO', 'CHECKIN', 'Check-in result created with photo', {
         requestId: req.requestId,
         userId: user.id,
@@ -1751,7 +1765,7 @@ app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
         result: true
       },
       orderBy: { requestedAt: 'desc' },
-      take: 100
+      take: 1000
     });
 
     log('INFO', 'CHECKIN', 'Check-ins list retrieved', {
@@ -1858,7 +1872,7 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
     try {
       await bot.telegram.sendMessage(
         employee.telegramId,
-        '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение и фото.',
+        '📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.',
         Markup.inlineKeyboard([
           [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
         ])
@@ -2332,7 +2346,7 @@ cron.schedule('* * * * *', async () => {
       try {
         await bot.telegram.sendMessage(
           employee.telegramId,
-          '📍 Проверка местоположения!\\n\\nПожалуйста, отправьте ваше текущее местоположение и фото.',
+          '📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.',
           Markup.inlineKeyboard([
             [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
           ])
