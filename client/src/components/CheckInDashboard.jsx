@@ -5,10 +5,40 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
   const [checkIns, setCheckIns] = useState(initialCheckIns || []);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(false);
+  const [startDate, setStartDate] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 6);
+    return date.toISOString().slice(0, 10);
+  });
+  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [threshold, setThreshold] = useState(70);
 
   useEffect(() => {
     setCheckIns(initialCheckIns || []);
   }, [initialCheckIns]);
+
+  const loadCheckIns = async () => {
+    try {
+      setLoading(true);
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.get('/api/check-ins', {
+        headers: { 'x-telegram-init-data': initData },
+        params: {
+          startDate,
+          endDate
+        }
+      });
+      setCheckIns(response.data || []);
+    } catch (error) {
+      console.error('Error loading check-ins:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCheckIns();
+  }, [startDate, endDate]);
 
   const filteredCheckIns = checkIns.filter(checkIn => {
     const result = checkIn.result;
@@ -40,6 +70,30 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
 
   const successfulCount = checkIns.filter(c => c.result?.isWithinZone === true).length;
   const failedCount = checkIns.filter(c => c.result?.isWithinZone === false).length;
+  const perUserStats = checkIns.reduce((acc, checkIn) => {
+    const name = checkIn.user?.name || 'Без имени';
+    if (!acc[name]) {
+      acc[name] = { total: 0, bad: 0 };
+    }
+    if (checkIn.status === 'PENDING') {
+      return acc;
+    }
+    acc[name].total += 1;
+    const isBad = checkIn.status === 'MISSED' || checkIn.result?.isWithinZone === false;
+    if (isBad) {
+      acc[name].bad += 1;
+    }
+    return acc;
+  }, {});
+
+  const reportRows = Object.entries(perUserStats)
+    .map(([name, stats]) => {
+      const score = stats.total > 0
+        ? Math.round(((stats.total - stats.bad) / stats.total) * 100)
+        : 0;
+      return { name, score, total: stats.total, bad: stats.bad };
+    })
+    .sort((a, b) => a.score - b.score);
 
   return (
     <div className="space-y-4">
@@ -59,6 +113,76 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
           <div className="text-2xl font-bold text-red-700">
             {failedCount}
           </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">Период с</label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(event) => setStartDate(event.target.value)}
+              className="rounded border border-gray-300 px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">по</label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(event) => setEndDate(event.target.value)}
+              className="rounded border border-gray-300 px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">Нижняя планка (%)</label>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={threshold}
+              onChange={(event) => setThreshold(Number(event.target.value))}
+              className="rounded border border-gray-300 px-3 py-2 text-sm w-28"
+            />
+          </div>
+          <button
+            onClick={loadCheckIns}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            Обновить
+          </button>
+        </div>
+        <p className="mt-3 text-xs text-gray-500">
+          Чем ниже процент, тем больше пропусков или проверок вне зоны.
+        </p>
+        <div className="mt-4 space-y-3">
+          {reportRows.length === 0 ? (
+            <div className="text-sm text-gray-500">Нет данных за выбранный период</div>
+          ) : (
+            reportRows.map((row) => (
+              <div key={row.name} className="flex items-center gap-4">
+                <div className="w-40 text-sm text-gray-700 truncate" title={row.name}>
+                  {row.name}
+                </div>
+                <div className="flex-1">
+                  <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${row.score < threshold ? 'bg-red-500' : 'bg-green-500'}`}
+                      style={{ width: `${row.score}%` }}
+                    ></div>
+                  </div>
+                </div>
+                <div className={`w-16 text-sm font-medium ${row.score < threshold ? 'text-red-600' : 'text-green-600'}`}>
+                  {row.score}%
+                </div>
+                <div className="w-20 text-xs text-gray-500">
+                  {row.bad}/{row.total}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
@@ -186,6 +310,7 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
 function PhotoDisplay({ requestId }) {
   const [photoUrl, setPhotoUrl] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     const loadPhoto = async () => {
@@ -220,20 +345,39 @@ function PhotoDisplay({ requestId }) {
   }
 
   return (
-    <a
-      href={photoUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-block"
-    >
-      <img
-        src={photoUrl}
-        alt="Check-in photo"
-        className="h-24 w-24 object-cover rounded border border-gray-300"
-        onError={(e) => {
-          e.target.style.display = 'none';
-        }}
-      />
-    </a>
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-block"
+      >
+        <img
+          src={photoUrl}
+          alt="Check-in photo"
+          className="h-20 w-20 object-cover rounded border border-gray-300"
+          onError={(e) => {
+            e.target.style.display = 'none';
+          }}
+        />
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 p-4">
+          <div className="relative max-w-3xl w-full">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="absolute -top-10 right-0 text-white text-sm"
+            >
+              Закрыть ✕
+            </button>
+            <img
+              src={photoUrl}
+              alt="Check-in photo large"
+              className="max-h-[80vh] w-full object-contain rounded"
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }
