@@ -5,12 +5,13 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
   const [checkIns, setCheckIns] = useState(initialCheckIns || []);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(false);
+  const formatLocalDate = (date) => date.toLocaleDateString('en-CA');
   const [startDate, setStartDate] = useState(() => {
     const date = new Date();
     date.setDate(date.getDate() - 6);
-    return date.toISOString().slice(0, 10);
+    return formatLocalDate(date);
   });
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState(() => formatLocalDate(new Date()));
   const [threshold, setThreshold] = useState(70);
 
   useEffect(() => {
@@ -313,34 +314,17 @@ function PhotoDisplay({ requestId }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    const loadPhoto = async () => {
-      try {
-        const initData = window.Telegram?.WebApp?.initData || '';
-        const response = await axios.get(`/api/check-ins/${requestId}/photo/file`, {
-          headers: { 'x-telegram-init-data': initData },
-          responseType: 'blob'
-        });
+    const initData = window.Telegram?.WebApp?.initData || '';
+    if (!initData) {
+      setLoading(false);
+      setPhotoUrl(null);
+      return () => {};
+    }
 
-        const objectUrl = URL.createObjectURL(response.data);
-        setPhotoUrl(objectUrl);
-        return objectUrl;
-      } catch (error) {
-        console.error('Error loading photo:', error);
-        return null;
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    let activeUrl = null;
-    loadPhoto().then((url) => {
-      activeUrl = url;
-    });
-    return () => {
-      if (activeUrl) {
-        URL.revokeObjectURL(activeUrl);
-      }
-    };
+    const url = `/api/check-ins/${requestId}/photo/file?initData=${encodeURIComponent(initData)}`;
+    setPhotoUrl(url);
+    setLoading(false);
+    return () => {};
   }, [requestId]);
 
   if (loading) {
