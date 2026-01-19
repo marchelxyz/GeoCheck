@@ -47,6 +47,52 @@ function log(level, category, message, data = {}) {
   }
 }
 
+async function finalizeCheckInIfReady(requestId) {
+  try {
+    const request = await prisma.checkInRequest.findUnique({
+      where: { id: requestId },
+      include: { user: true, result: true }
+    });
+
+    if (!request?.result) {
+      return false;
+    }
+
+    const hasLocation = request.result.locationLat !== 0 || request.result.locationLon !== 0;
+    const hasPhoto = Boolean(request.result.photoPath || request.result.photoFileId || request.result.photoUrl);
+
+    if (!hasLocation || !hasPhoto) {
+      return false;
+    }
+
+    if (request.status !== 'COMPLETED') {
+      await prisma.checkInRequest.update({
+        where: { id: requestId },
+        data: { status: 'COMPLETED' }
+      });
+    }
+
+    if (request.telegramMessageId && request.user?.telegramId) {
+      try {
+        await bot.telegram.deleteMessage(request.user.telegramId, request.telegramMessageId);
+      } catch (error) {
+        log('WARN', 'CHECKIN', 'Failed to delete check-in message', {
+          requestId,
+          telegramMessageId: request.telegramMessageId,
+          error: error.message
+        });
+      }
+    }
+
+    return true;
+  } catch (error) {
+    log('ERROR', 'CHECKIN', 'Error finalizing check-in', {
+      requestId,
+      error: error.message
+    });
+    return false;
+  }
+}
 // Helper function to mask sensitive data in DATABASE_URL for logging
 function maskDatabaseUrl(url) {
   if (!url) return 'NOT SET';
@@ -351,7 +397,9 @@ function parseInitData(initData) {
 function verifyTelegramWebApp(req, res, next) {
   const initData = req.headers['x-telegram-init-data'] || 
                    req.headers['X-Telegram-Init-Data'] ||
-                   req.headers['X-TELEGRAM-INIT-DATA'];
+                   req.headers['X-TELEGRAM-INIT-DATA'] ||
+                   req.query?.initData ||
+                   req.query?.tgInitData;
   
   if (!initData) {
     log('WARN', 'AUTH', 'Missing Telegram init data header', {
@@ -1493,7 +1541,7 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
     });
 
     if (existingResult) {
-      const updatedResult = await prisma.checkInResult.update({
+      await prisma.checkInResult.update({
         where: { id: existingResult.id },
         data: {
           locationLat: latitude,
@@ -1502,12 +1550,6 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
           distanceToZone: locationCheck.distanceToZone
         }
       });
-      if (updatedResult.photoPath || updatedResult.photoFileId || updatedResult.photoUrl) {
-        await prisma.checkInRequest.update({
-          where: { id: pendingRequest.id },
-          data: { status: 'COMPLETED' }
-        });
-      }
       log('INFO', 'CHECKIN', 'Check-in result updated', {
         requestId: req.requestId,
         userId: user.id,
@@ -1533,6 +1575,8 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
         distanceToZone: locationCheck.distanceToZone
       });
     }
+
+    await finalizeCheckInIfReady(pendingRequest.id);
 
     res.json({
       success: true,
@@ -1631,7 +1675,7 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
     });
 
     if (result) {
-      const updatedResult = await prisma.checkInResult.update({
+      await prisma.checkInResult.update({
         where: { id: result.id },
         data: {
           photoFileId: photoFileId || result.photoFileId,
@@ -1639,13 +1683,6 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
           photoUrl: photoUrl || result.photoUrl
         }
       });
-      const hasLocation = updatedResult.locationLat !== 0 || updatedResult.locationLon !== 0;
-      if (hasLocation) {
-        await prisma.checkInRequest.update({
-          where: { id: pendingRequest.id },
-          data: { status: 'COMPLETED' }
-        });
-      }
       log('INFO', 'CHECKIN', 'Photo added to existing check-in result', {
         requestId: req.requestId,
         userId: user.id,
@@ -1653,7 +1690,7 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
         resultId: result.id
       });
     } else {
-      const createdResult = await prisma.checkInResult.create({
+      await prisma.checkInResult.create({
         data: {
           requestId: pendingRequest.id,
           locationLat: 0,
@@ -1664,18 +1701,14 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
           photoUrl
         }
       });
-      if (createdResult.locationLat !== 0 || createdResult.locationLon !== 0) {
-        await prisma.checkInRequest.update({
-          where: { id: pendingRequest.id },
-          data: { status: 'COMPLETED' }
-        });
-      }
       log('INFO', 'CHECKIN', 'Check-in result created with photo', {
         requestId: req.requestId,
         userId: user.id,
         checkInRequestId: pendingRequest.id
       });
     }
+
+    await finalizeCheckInIfReady(pendingRequest.id);
 
     res.json({ success: true });
   } catch (error) {
@@ -1894,13 +1927,11 @@ app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
     if (startDate || endDate) {
       where.requestedAt = {};
       if (startDate) {
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
+        const start = new Date(`${startDate}T00:00:00`);
         where.requestedAt.gte = start;
       }
       if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
+        const end = new Date(`${endDate}T23:59:59.999`);
         where.requestedAt.lte = end;
       }
     }
@@ -2019,13 +2050,17 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
 
     const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
     try {
-      await bot.telegram.sendMessage(
+      const sentMessage = await bot.telegram.sendMessage(
         employee.telegramId,
         '📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.',
         Markup.inlineKeyboard([
           [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
         ])
       );
+      await prisma.checkInRequest.update({
+        where: { id: checkInRequest.id },
+        data: { telegramMessageId: sentMessage.message_id }
+      });
       log('INFO', 'BOT', 'Check-in notification sent to employee', {
         requestId: req.requestId,
         employeeId: employee.id,
@@ -2297,11 +2332,6 @@ bot.on('location', async (ctx) => {
 
   const locationCheck = await checkLocationInZones(location.latitude, location.longitude, user.id);
 
-  await prisma.checkInRequest.update({
-    where: { id: pendingRequest.id },
-    data: { status: 'COMPLETED' }
-  });
-
   const existingResult = await prisma.checkInResult.findUnique({
     where: { requestId: pendingRequest.id }
   });
@@ -2335,6 +2365,8 @@ bot.on('location', async (ctx) => {
     isWithinZone: locationCheck.isWithinZone,
     distanceToZone: locationCheck.distanceToZone
   });
+
+  await finalizeCheckInIfReady(pendingRequest.id);
 
   const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
   await ctx.reply(`${status}\\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
@@ -2401,6 +2433,7 @@ bot.on('photo', async (ctx) => {
         checkInRequestId: pendingRequest.id
       });
     }
+    await finalizeCheckInIfReady(pendingRequest.id);
     await ctx.reply('✅ Фото сохранено!');
   } else {
     log('WARN', 'BOT', 'No pending request for photo', {
@@ -2493,13 +2526,17 @@ cron.schedule('* * * * *', async () => {
 
       const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
       try {
-        await bot.telegram.sendMessage(
+        const sentMessage = await bot.telegram.sendMessage(
           employee.telegramId,
           '📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.',
           Markup.inlineKeyboard([
             [Markup.button.webApp('Открыть интерфейс проверки', checkInUrl)]
           ])
         );
+        await prisma.checkInRequest.update({
+          where: { id: checkInRequest.id },
+          data: { telegramMessageId: sentMessage.message_id }
+        });
         log('INFO', 'CRON', 'Check-in notification sent to employee', {
           employeeId: employee.id,
           checkInRequestId: checkInRequest.id
