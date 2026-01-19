@@ -20,3 +20,15 @@ html, body, #root {
 #root {
   min-height: 100vh;
 }
+
+/* Make Leaflet attribution less intrusive while keeping it visible */
+.leaflet-control-attribution {
+  font-size: 10px;
+  opacity: 0.7;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.leaflet-control-attribution a {
+  text-decoration: none;
+}
