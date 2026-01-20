@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { MapContainer, TileLayer, Marker, Circle, useMapEvents } from 'react-leaflet';
+import { useEffect, useState } from 'react';
+import { MapContainer, TileLayer, Marker, Circle, useMap, useMapEvents } from 'react-leaflet';
 import axios from 'axios';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -22,6 +22,17 @@ function MapClickHandler({ onMapClick, disabled }) {
   return null;
 }
 
+function MapCenterUpdater({ center }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!center) return;
+    map.setView(center, map.getZoom(), { animate: true });
+  }, [center, map]);
+
+  return null;
+}
+
 export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees = [] }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [zoneName, setZoneName] = useState('');
@@ -30,6 +41,9 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const [submitting, setSubmitting] = useState(false);
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
   const [isShared, setIsShared] = useState(false);
+  const [addressQuery, setAddressQuery] = useState('');
+  const [addressSuggestions, setAddressSuggestions] = useState([]);
+  const [addressLoading, setAddressLoading] = useState(false);
   const defaultCenter = [56.2965, 44.0020];
   const [center, setCenter] = useState(defaultCenter);
 
@@ -55,6 +69,46 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
     setSelectedLocation(latlng);
     setShowForm(true);
   };
+
+  const handleAddressSelect = (suggestion) => {
+    const lat = parseFloat(suggestion.lat);
+    const lng = parseFloat(suggestion.lon);
+    setSelectedLocation({ lat, lng });
+    setCenter([lat, lng]);
+    setShowForm(true);
+    setAddressQuery(suggestion.display_name);
+    setAddressSuggestions([]);
+  };
+
+  useEffect(() => {
+    const query = addressQuery.trim();
+    if (query.length < 3) {
+      setAddressSuggestions([]);
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setAddressLoading(true);
+      try {
+        const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+          params: {
+            format: 'json',
+            q: query,
+            limit: 5,
+            addressdetails: 1
+          }
+        });
+        setAddressSuggestions(response.data || []);
+      } catch (error) {
+        console.error('Error searching address:', error);
+        setAddressSuggestions([]);
+      } finally {
+        setAddressLoading(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timeoutId);
+  }, [addressQuery]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -202,9 +256,43 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
         )}
       </div>
 
+      {/* Address Search */}
+      <div className="bg-white rounded-lg shadow p-4 relative z-10">
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Поиск адреса для установки зоны
+        </label>
+        <input
+          type="text"
+          value={addressQuery}
+          onChange={(event) => setAddressQuery(event.target.value)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Начните вводить адрес..."
+        />
+        {addressLoading && (
+          <p className="text-xs text-gray-500 mt-2">Поиск...</p>
+        )}
+        {addressSuggestions.length > 0 && (
+          <div className="absolute left-4 right-4 mt-2 bg-white border border-gray-200 rounded-md shadow-lg z-20 max-h-60 overflow-auto">
+            {addressSuggestions.map((suggestion) => (
+              <button
+                key={`${suggestion.place_id}-${suggestion.lat}-${suggestion.lon}`}
+                type="button"
+                onClick={() => handleAddressSelect(suggestion)}
+                className="w-full text-left px-3 py-2 hover:bg-gray-50 text-sm"
+              >
+                {suggestion.display_name}
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="text-xs text-gray-500 mt-2">
+          Можно выбрать адрес, и метка появится на карте. Сотрудники должны быть выбраны заранее.
+        </p>
+      </div>
+
       {/* Zone Creation Form */}
       {showForm && selectedLocation && selectedEmployeeIds.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-4">
+        <div className="bg-white rounded-lg shadow p-4 relative z-10">
           <h3 className="text-lg font-semibold mb-4">
             {isShared ? 'Создание общей зоны' : `Создание зоны для ${selectedEmployee?.name || ''}`}
           </h3>
@@ -261,7 +349,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       )}
 
       {/* Map */}
-      <div className="bg-white rounded-lg shadow overflow-hidden" style={{ height: '500px' }}>
+      <div className="bg-white rounded-lg shadow overflow-hidden relative z-0" style={{ height: '500px' }}>
         <MapContainer
           center={center}
           zoom={13}
@@ -276,6 +364,8 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
             onMapClick={handleMapClick} 
             disabled={selectedEmployeeIds.length === 0}
           />
+
+          <MapCenterUpdater center={center} />
           
           {selectedLocation && (
             <Marker position={[selectedLocation.lat, selectedLocation.lng]} />
