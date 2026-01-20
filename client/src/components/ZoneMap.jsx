@@ -56,8 +56,10 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const [addressQuery, setAddressQuery] = useState('');
   const [addressSuggestions, setAddressSuggestions] = useState([]);
   const [addressLoading, setAddressLoading] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
   const defaultCenter = [56.2965, 44.0020];
   const [center, setCenter] = useState(defaultCenter);
+  const mapInteractionsDisabled = showForm || searchFocused || addressSuggestions.length > 0;
 
   const handleEmployeeSelect = (employee) => {
     setShowForm(false);
@@ -278,6 +280,10 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           type="text"
           value={addressQuery}
           onChange={(event) => setAddressQuery(event.target.value)}
+          onFocus={() => setSearchFocused(true)}
+          onBlur={() => {
+            setTimeout(() => setSearchFocused(false), 150);
+          }}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="Начните вводить адрес..."
         />
@@ -362,7 +368,10 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       )}
 
       {/* Map */}
-      <div className="bg-white rounded-lg shadow overflow-hidden relative z-0" style={{ height: '500px' }}>
+      <div
+        className="bg-white rounded-lg shadow overflow-hidden relative z-0"
+        style={{ height: '500px', pointerEvents: mapInteractionsDisabled ? 'none' : 'auto' }}
+      >
         <MapContainer
           center={center}
           zoom={13}
