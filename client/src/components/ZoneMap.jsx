@@ -33,6 +33,18 @@ function MapCenterUpdater({ center }) {
   return null;
 }
 
+function formatRuAddress(address = {}) {
+  const parts = [
+    address.country,
+    address.state || address.region || address.state_district,
+    address.city || address.town || address.village,
+    address.road,
+    address.house_number
+  ].filter(Boolean);
+
+  return parts.join(', ');
+}
+
 export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees = [] }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [zoneName, setZoneName] = useState('');
@@ -73,10 +85,11 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const handleAddressSelect = (suggestion) => {
     const lat = parseFloat(suggestion.lat);
     const lng = parseFloat(suggestion.lon);
+    const formattedAddress = formatRuAddress(suggestion.address);
     setSelectedLocation({ lat, lng });
     setCenter([lat, lng]);
     setShowForm(true);
-    setAddressQuery(suggestion.display_name);
+    setAddressQuery(formattedAddress || suggestion.display_name);
     setAddressSuggestions([]);
   };
 
@@ -280,7 +293,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                 onClick={() => handleAddressSelect(suggestion)}
                 className="w-full text-left px-3 py-2 hover:bg-gray-50 text-sm"
               >
-                {suggestion.display_name}
+                {formatRuAddress(suggestion.address) || suggestion.display_name}
               </button>
             ))}
           </div>
