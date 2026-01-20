@@ -500,25 +500,29 @@ export default function DirectorView() {
 
                       <div className="border-t border-gray-200 pt-4">
                         <div className="mb-4">
-                          <h3 className="text-sm font-semibold text-gray-700 mb-2">Имя для отображения</h3>
-                          <div className="flex flex-wrap items-center gap-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="text-sm font-semibold text-gray-700">
+                              Имя для отображения
+                            </label>
+                            <span className="text-xs text-gray-500">
+                              (только админка, Telegram не меняется)
+                            </span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
                             <input
                               type="text"
-                              className="flex-1 min-w-[220px] rounded border border-gray-300 px-3 py-2 text-sm"
+                              className="flex-1 min-w-[200px] rounded border border-gray-300 px-2.5 py-1.5 text-sm"
                               placeholder="Например: Вадим (склад)"
                               value={displayNameDrafts[employee.id] || ''}
                               onChange={(event) => handleDisplayNameChange(employee.id, event.target.value)}
                             />
                             <button
                               onClick={() => handleSaveDisplayName(employee.id)}
-                              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                              className="px-3 py-1.5 border border-blue-600 text-blue-600 hover:bg-blue-50 text-sm font-medium rounded-md transition-colors"
                             >
-                              Сохранить имя
+                              Сохранить
                             </button>
                           </div>
-                          <p className="text-xs text-gray-500 mt-2">
-                            Это имя видно только в админке и не меняет имя в Telegram.
-                          </p>
                         </div>
 
                         <h3 className="text-sm font-semibold text-gray-700 mb-2">Рабочий график</h3>
