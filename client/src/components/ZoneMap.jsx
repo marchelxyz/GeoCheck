@@ -59,6 +59,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const [searchFocused, setSearchFocused] = useState(false);
   const defaultCenter = [56.2965, 44.0020];
   const [center, setCenter] = useState(defaultCenter);
+  const defaultZoom = 12;
   const mapInteractionsDisabled = showForm || searchFocused || addressSuggestions.length > 0;
 
   const handleEmployeeSelect = (employee) => {
@@ -374,7 +375,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       >
         <MapContainer
           center={center}
-          zoom={13}
+          zoom={defaultZoom}
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer
