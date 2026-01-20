@@ -12,6 +12,11 @@ export default function DirectorView() {
   const [loading, setLoading] = useState(true);
   const [scheduleDrafts, setScheduleDrafts] = useState({});
   const [displayNameDrafts, setDisplayNameDrafts] = useState({});
+  const [dailyCheckInDrafts, setDailyCheckInDrafts] = useState({});
+  const [scheduleEmployeeId, setScheduleEmployeeId] = useState('');
+  const [scheduleDate, setScheduleDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [scheduleItems, setScheduleItems] = useState([]);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
   const [directorSettings, setDirectorSettings] = useState({
     notificationsEnabled: true,
     weeklyZoneReminderEnabled: true,
@@ -66,6 +71,7 @@ export default function DirectorView() {
   useEffect(() => {
     const drafts = {};
     const nameDrafts = {};
+    const dailyDrafts = {};
     employees.forEach((employee) => {
       drafts[employee.id] = {
         workDays: parseWorkDays(employee.workDays),
@@ -73,9 +79,13 @@ export default function DirectorView() {
         workEndMinutes: Number.isInteger(employee.workEndMinutes) ? employee.workEndMinutes : 1080
       };
       nameDrafts[employee.id] = employee.displayName || '';
+      dailyDrafts[employee.id] = Number.isInteger(employee.dailyCheckInTarget)
+        ? employee.dailyCheckInTarget
+        : 8;
     });
     setScheduleDrafts(drafts);
     setDisplayNameDrafts(nameDrafts);
+    setDailyCheckInDrafts(dailyDrafts);
   }, [employees]);
 
   const loadData = async () => {
@@ -237,6 +247,59 @@ export default function DirectorView() {
     }
   };
 
+  const handleDailyCheckInChange = (employeeId, value) => {
+    setDailyCheckInDrafts((prev) => ({
+      ...prev,
+      [employeeId]: value
+    }));
+  };
+
+  const handleSaveDailyCheckIns = async (employeeId) => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.put(
+        `/api/employees/${employeeId}/daily-checkins`,
+        { dailyCheckInTarget: Number(dailyCheckInDrafts[employeeId]) },
+        { headers: { 'x-telegram-init-data': initData } }
+      );
+      setEmployees(employees.map((emp) =>
+        emp.id === employeeId
+          ? { ...emp, dailyCheckInTarget: response.data.dailyCheckInTarget }
+          : emp
+      ));
+    } catch (error) {
+      console.error('Error updating daily check-ins:', error);
+      alert(error.response?.data?.error || 'Ошибка обновления количества проверок');
+    }
+  };
+
+  const loadSchedule = async (employeeId, date) => {
+    if (!employeeId) return;
+    try {
+      setScheduleLoading(true);
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.get('/api/check-ins/schedule', {
+        headers: { 'x-telegram-init-data': initData },
+        params: {
+          employeeId,
+          date
+        }
+      });
+      setScheduleItems(response.data.items || []);
+    } catch (error) {
+      console.error('Error loading schedule:', error);
+      setScheduleItems([]);
+    } finally {
+      setScheduleLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (scheduleEmployeeId) {
+      loadSchedule(scheduleEmployeeId, scheduleDate);
+    }
+  }, [scheduleEmployeeId, scheduleDate]);
+
   const handleToggleWorkDay = (employeeId, dayValue) => {
     const currentDays = scheduleDrafts[employeeId]?.workDays || [];
     const nextDays = currentDays.includes(dayValue)
@@ -395,6 +458,16 @@ export default function DirectorView() {
             >
               ⚙️ Настройки
             </button>
+            <button
+              onClick={() => setActiveTab('schedule')}
+              className={`px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === 'schedule'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
+            >
+              📅 График проверок
+            </button>
           </div>
         </div>
       </div>
@@ -518,6 +591,31 @@ export default function DirectorView() {
                             />
                             <button
                               onClick={() => handleSaveDisplayName(employee.id)}
+                              className="px-3 py-1.5 border border-blue-600 text-blue-600 hover:bg-blue-50 text-sm font-medium rounded-md transition-colors"
+                            >
+                              Сохранить
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mb-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="text-sm font-semibold text-gray-700">
+                              Авто-проверок в день
+                            </label>
+                            <span className="text-xs text-gray-500">(по умолчанию 8)</span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <input
+                              type="number"
+                              min="0"
+                              max="20"
+                              className="w-24 rounded border border-gray-300 px-2.5 py-1.5 text-sm"
+                              value={dailyCheckInDrafts[employee.id] ?? 8}
+                              onChange={(event) => handleDailyCheckInChange(employee.id, event.target.value)}
+                            />
+                            <button
+                              onClick={() => handleSaveDailyCheckIns(employee.id)}
                               className="px-3 py-1.5 border border-blue-600 text-blue-600 hover:bg-blue-50 text-sm font-medium rounded-md transition-colors"
                             >
                               Сохранить
@@ -651,6 +749,82 @@ export default function DirectorView() {
                 </label>
               </div>
             </div>
+          </div>
+        )}
+        {activeTab === 'schedule' && (
+          <div className="bg-white rounded-lg shadow-sm p-6 space-y-4">
+            <h2 className="text-xl font-bold text-gray-800">График проверок</h2>
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Сотрудник</label>
+                <select
+                  value={scheduleEmployeeId}
+                  onChange={(event) => setScheduleEmployeeId(event.target.value)}
+                  className="rounded border border-gray-300 px-3 py-2 text-sm min-w-[220px]"
+                >
+                  <option value="">Выберите сотрудника</option>
+                  {employees.map((employee) => (
+                    <option key={employee.id} value={employee.id}>
+                      {employee.displayName || employee.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Дата</label>
+                <input
+                  type="date"
+                  value={scheduleDate}
+                  onChange={(event) => setScheduleDate(event.target.value)}
+                  className="rounded border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <button
+                onClick={() => loadSchedule(scheduleEmployeeId, scheduleDate)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                disabled={!scheduleEmployeeId || scheduleLoading}
+              >
+                {scheduleLoading ? 'Загрузка...' : 'Обновить'}
+              </button>
+            </div>
+            <div className="mt-4">
+              {scheduleLoading ? (
+                <div className="text-sm text-gray-500">Загрузка расписания...</div>
+              ) : scheduleEmployeeId ? (
+                scheduleItems.length === 0 ? (
+                  <div className="text-sm text-gray-500">Нет запланированных проверок на выбранную дату</div>
+                ) : (
+                  <div className="space-y-2">
+                    {scheduleItems.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between rounded border border-gray-200 px-3 py-2 text-sm"
+                      >
+                        <span>{new Date(item.scheduledAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span className={`text-xs font-medium ${
+                          item.status === 'SENT'
+                            ? 'text-green-600'
+                            : item.status === 'SKIPPED'
+                              ? 'text-gray-500'
+                              : 'text-blue-600'
+                        }`}>
+                          {item.status === 'SENT'
+                            ? 'Отправлено'
+                            : item.status === 'SKIPPED'
+                              ? 'Пропущено'
+                              : 'Ожидает'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              ) : (
+                <div className="text-sm text-gray-500">Выберите сотрудника для просмотра графика</div>
+              )}
+            </div>
+            <p className="text-xs text-gray-500">
+              График формируется ежедневно в 02:00 (МСК). Возможны пропуски при истекшем окне или отключенных проверках.
+            </p>
           </div>
         )}
       </div>
