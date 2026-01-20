@@ -33,6 +33,18 @@ function MapCenterUpdater({ center }) {
   return null;
 }
 
+function formatRuAddress(address = {}) {
+  const parts = [
+    address.country,
+    address.state || address.region || address.state_district,
+    address.city || address.town || address.village,
+    address.road,
+    address.house_number
+  ].filter(Boolean);
+
+  return parts.join(', ');
+}
+
 export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees = [] }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [zoneName, setZoneName] = useState('');
@@ -44,8 +56,11 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const [addressQuery, setAddressQuery] = useState('');
   const [addressSuggestions, setAddressSuggestions] = useState([]);
   const [addressLoading, setAddressLoading] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
   const defaultCenter = [56.2965, 44.0020];
   const [center, setCenter] = useState(defaultCenter);
+  const defaultZoom = 12;
+  const mapInteractionsDisabled = showForm || searchFocused || addressSuggestions.length > 0;
 
   const handleEmployeeSelect = (employee) => {
     setShowForm(false);
@@ -73,10 +88,11 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const handleAddressSelect = (suggestion) => {
     const lat = parseFloat(suggestion.lat);
     const lng = parseFloat(suggestion.lon);
+    const formattedAddress = formatRuAddress(suggestion.address);
     setSelectedLocation({ lat, lng });
     setCenter([lat, lng]);
     setShowForm(true);
-    setAddressQuery(suggestion.display_name);
+    setAddressQuery(formattedAddress || suggestion.display_name);
     setAddressSuggestions([]);
   };
 
@@ -265,6 +281,10 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           type="text"
           value={addressQuery}
           onChange={(event) => setAddressQuery(event.target.value)}
+          onFocus={() => setSearchFocused(true)}
+          onBlur={() => {
+            setTimeout(() => setSearchFocused(false), 150);
+          }}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="Начните вводить адрес..."
         />
@@ -280,7 +300,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                 onClick={() => handleAddressSelect(suggestion)}
                 className="w-full text-left px-3 py-2 hover:bg-gray-50 text-sm"
               >
-                {suggestion.display_name}
+                {formatRuAddress(suggestion.address) || suggestion.display_name}
               </button>
             ))}
           </div>
@@ -349,10 +369,13 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       )}
 
       {/* Map */}
-      <div className="bg-white rounded-lg shadow overflow-hidden relative z-0" style={{ height: '500px' }}>
+      <div
+        className="bg-white rounded-lg shadow overflow-hidden relative z-0"
+        style={{ height: '500px', pointerEvents: mapInteractionsDisabled ? 'none' : 'auto' }}
+      >
         <MapContainer
           center={center}
-          zoom={13}
+          zoom={defaultZoom}
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer

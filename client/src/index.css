@@ -21,6 +21,10 @@ html, body, #root {
   min-height: 100vh;
 }
 
+.leaflet-container {
+  z-index: 0;
+}
+
 /* Make Leaflet attribution less intrusive while keeping it visible */
 .leaflet-control-attribution {
   font-size: 8px;
