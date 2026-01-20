@@ -575,6 +575,10 @@ async function checkLocationInZones(lat, lon, userId) {
 const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5]; // Пн-Пт (0 - Вс)
 const MIN_CHECKIN_MINUTES = 25;
 const MAX_CHECKIN_MINUTES = 95;
+const TIMEZONE_OFFSET_MINUTES = Number.parseInt(process.env.TIMEZONE_OFFSET_MINUTES, 10);
+const SCHEDULER_OFFSET_MINUTES = Number.isFinite(TIMEZONE_OFFSET_MINUTES)
+  ? TIMEZONE_OFFSET_MINUTES
+  : 180;
 
 function parseWorkDays(value) {
   if (Array.isArray(value)) {
@@ -669,6 +673,18 @@ function calculateNextCheckInAt(now, workDays, startMinutes, endMinutes) {
   }
 
   return null;
+}
+
+function toLocalDate(date) {
+  return new Date(date.getTime() + SCHEDULER_OFFSET_MINUTES * 60 * 1000);
+}
+
+function toUtcDate(date) {
+  return new Date(date.getTime() - SCHEDULER_OFFSET_MINUTES * 60 * 1000);
+}
+
+function getSchedulerNow() {
+  return toLocalDate(new Date());
 }
 
 // API Routes
@@ -971,7 +987,12 @@ app.put('/api/employees/:id/toggle-checkins', verifyTelegramWebApp, async (req, 
         checkInsEnabled: !employee.checkInsEnabled,
         nextCheckInAt: employee.checkInsEnabled
           ? null
-          : calculateNextCheckInAt(new Date(), parseWorkDays(employee.workDays), employee.workStartMinutes, employee.workEndMinutes)
+          : toUtcDate(calculateNextCheckInAt(
+            getSchedulerNow(),
+            parseWorkDays(employee.workDays),
+            employee.workStartMinutes,
+            employee.workEndMinutes
+          ))
       }
     });
 
@@ -1048,7 +1069,12 @@ app.put('/api/employees/:id/work-schedule', verifyTelegramWebApp, async (req, re
         workDays: parsedDays.join(','),
         workStartMinutes: normalized.startMinutes,
         workEndMinutes: normalized.endMinutes,
-        nextCheckInAt: calculateNextCheckInAt(new Date(), parsedDays, normalized.startMinutes, normalized.endMinutes)
+        nextCheckInAt: toUtcDate(calculateNextCheckInAt(
+          getSchedulerNow(),
+          parsedDays,
+          normalized.startMinutes,
+          normalized.endMinutes
+        ))
       }
     });
 
@@ -2814,7 +2840,7 @@ bot.on('photo', async (ctx) => {
 
 // Cron job for randomized check-ins
 cron.schedule('* * * * *', async () => {
-  const now = new Date();
+  const now = getSchedulerNow();
 
   log('INFO', 'CRON', 'Random check-in scheduler tick', {
     timestamp: now.toISOString()
@@ -2863,7 +2889,9 @@ cron.schedule('* * * * *', async () => {
   for (const employee of employees) {
     const workDays = parseWorkDays(employee.workDays);
     const normalized = normalizeWorkWindow(employee.workStartMinutes, employee.workEndMinutes);
-    let nextCheckInAt = employee.nextCheckInAt ? new Date(employee.nextCheckInAt) : null;
+    let nextCheckInAt = employee.nextCheckInAt
+      ? toLocalDate(new Date(employee.nextCheckInAt))
+      : null;
 
     if (!nextCheckInAt || Number.isNaN(nextCheckInAt.getTime())) {
       if (isWithinWorkWindow(now, workDays, normalized.startMinutes, normalized.endMinutes)) {
@@ -2886,7 +2914,7 @@ cron.schedule('* * * * *', async () => {
         const rescheduled = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
         await prisma.user.update({
           where: { id: employee.id },
-          data: { nextCheckInAt: rescheduled }
+          data: { nextCheckInAt: toUtcDate(rescheduled) }
         });
         continue;
       }
@@ -2955,17 +2983,17 @@ cron.schedule('* * * * *', async () => {
       const rescheduled = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
       await prisma.user.update({
         where: { id: employee.id },
-        data: { nextCheckInAt: rescheduled }
+        data: { nextCheckInAt: toUtcDate(rescheduled) }
       });
 
       log('INFO', 'CRON', 'Random check-in completed', {
         employeeId: employee.id,
         checkInRequestId: checkInRequest.id
       });
-    } else if (!employee.nextCheckInAt || employee.nextCheckInAt.getTime() !== nextCheckInAt.getTime()) {
+    } else if (!employee.nextCheckInAt || employee.nextCheckInAt.getTime() !== toUtcDate(nextCheckInAt).getTime()) {
       await prisma.user.update({
         where: { id: employee.id },
-        data: { nextCheckInAt }
+        data: { nextCheckInAt: toUtcDate(nextCheckInAt) }
       });
     }
   }
