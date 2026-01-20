@@ -298,6 +298,7 @@ async function runMigrations(maxRetries = 15, delay = 3000) {
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const ADMIN_GEO_TG = (process.env.ADMIN_GEO_TG || '').trim();
 const PORT = process.env.PORT || 3000;
 
 if (!BOT_TOKEN) {
@@ -306,6 +307,59 @@ if (!BOT_TOKEN) {
 }
 
 const bot = new Telegraf(BOT_TOKEN);
+
+const isAdminTelegram = (telegramId) => {
+  if (!ADMIN_GEO_TG) return false;
+  return String(telegramId) === ADMIN_GEO_TG;
+};
+
+const ensureAdminUser = async (telegramId, name = null) => {
+  if (!isAdminTelegram(telegramId)) return null;
+  const existing = await prisma.user.findUnique({
+    where: { telegramId: String(telegramId) }
+  });
+  if (!existing) {
+    return prisma.user.create({
+      data: {
+        telegramId: String(telegramId),
+        name,
+        role: 'DIRECTOR'
+      }
+    });
+  }
+  if (existing.role !== 'DIRECTOR') {
+    return prisma.user.update({
+      where: { telegramId: String(telegramId) },
+      data: { role: 'DIRECTOR' }
+    });
+  }
+  return existing;
+};
+
+const clearStartButton = async (telegramId) => {
+  const record = await prisma.startMessage.findUnique({
+    where: { telegramId: String(telegramId) }
+  });
+  if (!record) return;
+  try {
+    await bot.telegram.editMessageReplyMarkup(
+      String(telegramId),
+      record.messageId,
+      undefined,
+      null
+    );
+  } catch (error) {
+    log('WARN', 'BOT', 'Failed to remove start button', {
+      telegramId,
+      messageId: record.messageId,
+      error: error.message
+    });
+  } finally {
+    await prisma.startMessage.delete({
+      where: { telegramId: String(telegramId) }
+    });
+  }
+};
 
 // Track if bot is running
 let botRunning = false;
@@ -645,7 +699,11 @@ app.post('/api/user/register', verifyTelegramWebApp, async (req, res) => {
     }
 
     const userCount = await prisma.user.count();
-    const role = userCount === 0 ? 'DIRECTOR' : 'EMPLOYEE';
+    const role = isAdminTelegram(id)
+      ? 'DIRECTOR'
+      : userCount === 0
+        ? 'DIRECTOR'
+        : 'EMPLOYEE';
     
     user = await prisma.user.create({
       data: {
@@ -664,6 +722,7 @@ app.post('/api/user/register', verifyTelegramWebApp, async (req, res) => {
       isFirstUser: userCount === 0
     });
 
+    await clearStartButton(id);
     res.json(user);
   } catch (error) {
     log('ERROR', 'USER', 'Error in user registration', {
@@ -691,6 +750,10 @@ app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
       where: { telegramId: String(id) }
     });
 
+    if (!user && isAdminTelegram(id)) {
+      user = await ensureAdminUser(id, name);
+    }
+
     if (!user) {
       log('WARN', 'USER', 'User not found', {
         requestId: req.requestId,
@@ -699,9 +762,14 @@ app.post('/api/user', verifyTelegramWebApp, async (req, res) => {
       return res.status(404).json({ error: 'User not registered. Please register first.' });
     }
 
+    const newData = { name };
+    if (isAdminTelegram(id) && user.role !== 'DIRECTOR') {
+      newData.role = 'DIRECTOR';
+    }
+
     user = await prisma.user.update({
       where: { telegramId: String(id) },
-      data: { name }
+      data: newData
     });
 
     log('INFO', 'USER', 'User updated successfully', {
@@ -733,10 +801,15 @@ app.get('/api/user/role', verifyTelegramWebApp, async (req, res) => {
       telegramId: id
     });
 
-    const user = await prisma.user.findUnique({
+    let user = await prisma.user.findUnique({
       where: { telegramId: String(id) },
       select: { role: true }
     });
+
+    if (!user && isAdminTelegram(id)) {
+      const adminUser = await ensureAdminUser(id);
+      user = adminUser ? { role: adminUser.role } : null;
+    }
 
     if (!user) {
       log('WARN', 'USER', 'User not found for role check', {
@@ -1801,6 +1874,20 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
     });
 
     if (!pendingRequest) {
+      const requestedId = req.body?.requestId;
+      if (requestedId) {
+        const existingRequest = await prisma.checkInRequest.findFirst({
+          where: { id: requestedId, userId: user.id },
+          select: { status: true }
+        });
+        if (existingRequest?.status === 'COMPLETED') {
+          return res.json({ success: true, alreadyCompleted: true });
+        }
+        if (existingRequest?.status === 'MISSED') {
+          return res.status(410).json({ error: 'Время на отчет истекло' });
+        }
+      }
+
       log('WARN', 'CHECKIN', 'No pending check-in request for photo', {
         requestId: req.requestId,
         userId: user.id
@@ -2435,14 +2522,17 @@ bot.start(async (ctx) => {
     log('INFO', 'BOT', 'New user started bot - not registered', {
       telegramId: userId
     });
-    const keyboard = Markup.keyboard([
-      [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
-    ]).resize();
-    
-    await ctx.reply(
+    const message = await ctx.reply(
       '👋 Привет!\n\nДля использования бота необходимо зарегистрироваться через веб-приложение.\nНажмите кнопку ниже, чтобы открыть приложение и зарегистрироваться.',
-      keyboard
+      Markup.inlineKeyboard([
+        [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
+      ])
     );
+    await prisma.startMessage.upsert({
+      where: { telegramId: userId },
+      update: { messageId: message.message_id },
+      create: { telegramId: userId, messageId: message.message_id }
+    });
     return;
   }
 
@@ -2453,15 +2543,13 @@ bot.start(async (ctx) => {
     role: user.role
   });
 
-  const keyboard = Markup.keyboard([
-    [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
-  ]).resize();
-
   await ctx.reply(
     `Привет, ${user.name}! 👋\n\n` +
     `Это бот для отслеживания геолокации сотрудников.\n` +
     `Нажмите кнопку ниже, чтобы открыть приложение.`,
-    keyboard
+    Markup.inlineKeyboard([
+      [Markup.button.webApp('Открыть GeoCheck', WEB_APP_URL)]
+    ])
   );
 });
 
@@ -2739,7 +2827,13 @@ cron.schedule('* * * * *', async () => {
     let nextCheckInAt = employee.nextCheckInAt ? new Date(employee.nextCheckInAt) : null;
 
     if (!nextCheckInAt || Number.isNaN(nextCheckInAt.getTime())) {
-      nextCheckInAt = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
+      if (isWithinWorkWindow(now, workDays, normalized.startMinutes, normalized.endMinutes)) {
+        const quickMinutes = randomInt(5, 15);
+        nextCheckInAt = new Date(now.getTime() + quickMinutes * 60 * 1000);
+        nextCheckInAt.setSeconds(randomInt(5, 55), 0);
+      } else {
+        nextCheckInAt = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
+      }
     } else if (!isWithinWorkWindow(nextCheckInAt, workDays, normalized.startMinutes, normalized.endMinutes)) {
       nextCheckInAt = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
     }
