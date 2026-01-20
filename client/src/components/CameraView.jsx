@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function CameraView({ onCapture, onClose, onError }) {
+export default function CameraView({ onCapture, onClose, onError, captureDisabled = false }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const [loading, setLoading] = useState(false);
   const [permissionNeeded, setPermissionNeeded] = useState(false);
   const [cameraError, setCameraError] = useState(null);
+  const [captureLocked, setCaptureLocked] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(() => {
     return localStorage.getItem('cameraPermissionDenied') === '1';
   });
@@ -94,8 +95,9 @@ export default function CameraView({ onCapture, onClose, onError }) {
   };
 
   const handleCapture = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || loading || captureLocked || captureDisabled) return;
     setLoading(true);
+    setCaptureLocked(true);
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
@@ -124,6 +126,7 @@ export default function CameraView({ onCapture, onClose, onError }) {
         const message = 'Не удалось создать файл изображения.';
         setCameraError(message);
         onError?.(message);
+        setCaptureLocked(false);
         return;
       }
       const file = new File([blob], 'checkin_photo.jpg', { type: 'image/jpeg' });
@@ -162,7 +165,7 @@ export default function CameraView({ onCapture, onClose, onError }) {
         <button
           onClick={handleCapture}
           className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-medium rounded-full shadow-lg transition-colors"
-          disabled={loading}
+          disabled={loading || captureLocked || captureDisabled}
         >
           📷 Сделать фото
         </button>

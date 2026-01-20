@@ -88,6 +88,14 @@ model CheckInResult {
   @@map("check_in_results")
 }
 
+model StartMessage {
+  telegramId String @id
+  messageId  Int
+  createdAt  DateTime @default(now())
+
+  @@map("start_messages")
+}
+
 enum UserRole {
   DIRECTOR
   EMPLOYEE

@@ -33,6 +33,9 @@ export default function CheckInInterface({ requestId, onComplete }) {
   }, [locationSent, photoSent, onComplete]);
 
   const uploadPhoto = async (file) => {
+    if (photoSent || uploadingPhoto) {
+      return true;
+    }
     setUploadingPhoto(true);
     setPhotoError(null);
 
@@ -67,6 +70,9 @@ export default function CheckInInterface({ requestId, onComplete }) {
   };
 
   const handleSendPhoto = async () => {
+    if (photoSent || uploadingPhoto) {
+      return;
+    }
     setPhotoError(null);
     setCameraActive(true);
   };
@@ -149,6 +155,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           }}
           onClose={() => setCameraActive(false)}
           onError={(message) => setPhotoError(message)}
+          captureDisabled={uploadingPhoto || photoSent}
         />
       )}
       {uploadingPhoto && (
