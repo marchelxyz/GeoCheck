@@ -865,6 +865,7 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
         id: true,
         telegramId: true,
         name: true,
+        displayName: true,
         checkInsEnabled: true,
         workDays: true,
         workStartMinutes: true,
@@ -887,6 +888,40 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
       telegramId: req.telegramUser?.id,
       error: error.message,
       stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update employee display name (Director only)
+app.put('/api/employees/:id/display-name', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { id: employeeId } = req.params;
+    const { displayName } = req.body || {};
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const normalized = typeof displayName === 'string' ? displayName.trim() : '';
+
+    const updatedEmployee = await prisma.user.update({
+      where: { id: employeeId },
+      data: { displayName: normalized ? normalized : null },
+      select: { id: true, name: true, displayName: true }
+    });
+
+    res.json(updatedEmployee);
+  } catch (error) {
+    log('ERROR', 'EMPLOYEE', 'Error updating employee display name', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message
     });
     res.status(500).json({ error: error.message });
   }
@@ -1228,7 +1263,7 @@ app.get('/api/zones', verifyTelegramWebApp, async (req, res) => {
         employees: {
           include: {
             user: {
-              select: { id: true, name: true, telegramId: true }
+              select: { id: true, name: true, displayName: true, telegramId: true }
             }
           }
         }
@@ -1491,7 +1526,7 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
         employees: {
           include: {
             user: {
-              select: { id: true, name: true, telegramId: true }
+              select: { id: true, name: true, displayName: true, telegramId: true }
             }
           }
         }
@@ -1593,7 +1628,7 @@ app.put('/api/zones/:id/employees', verifyTelegramWebApp, async (req, res) => {
         employees: {
           include: {
             user: {
-              select: { id: true, name: true, telegramId: true }
+              select: { id: true, name: true, displayName: true, telegramId: true }
             }
           }
         }
@@ -2034,7 +2069,7 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
         request: {
           include: {
             user: {
-              select: { name: true }
+              select: { name: true, displayName: true }
             }
           }
         }
@@ -2055,15 +2090,16 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
         : result.photoPath;
       try {
         const photoUrl = await getPhotoUrl(normalizedPath, 3600);
+        const employeeName = result.request.user.displayName || result.request.user.name;
         log('INFO', 'CHECKIN', 'Photo URL retrieved from S3', {
           requestId: req.requestId,
           checkInRequestId: requestId,
-          employeeName: result.request.user.name
+          employeeName
         });
         return res.json({ 
           url: photoUrl,
           requestId: result.requestId,
-          employeeName: result.request.user.name
+          employeeName
         });
       } catch (error) {
         log('ERROR', 'CHECKIN', 'Error getting photo URL from S3', {
@@ -2076,15 +2112,16 @@ app.get('/api/check-ins/:id/photo', verifyTelegramWebApp, async (req, res) => {
     }
 
     if (result.photoFileId) {
+      const employeeName = result.request.user.displayName || result.request.user.name;
       log('INFO', 'CHECKIN', 'Photo file ID returned (legacy format)', {
         requestId: req.requestId,
         checkInRequestId: requestId,
-        employeeName: result.request.user.name
+        employeeName
       });
       return res.json({ 
         fileId: result.photoFileId,
         requestId: result.requestId,
-        employeeName: result.request.user.name,
+        employeeName,
         note: 'This photo is stored in Telegram Bot API. Consider migrating to S3.'
       });
     }
@@ -2227,7 +2264,7 @@ app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
       where,
       include: {
         user: {
-          select: { name: true, telegramId: true }
+          select: { name: true, displayName: true, telegramId: true }
         },
         result: true
       },
@@ -2335,12 +2372,13 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       requestId: req.requestId,
       directorId: director.id,
       employeeId: employee.id,
-      employeeName: employee.name,
+      employeeName: employee.displayName || employee.name,
       checkInRequestId: checkInRequest.id
     });
 
     const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
     try {
+      const employeeLabel = employee.displayName || employee.name;
       const sentMessage = await bot.telegram.sendMessage(
         employee.telegramId,
         `📍 Проверка местоположения!\n\nПожалуйста, отправьте ваше текущее местоположение и фото.\n⏱ На сдачу отчета есть ${deadlineMinutes} мин.`,
@@ -2782,7 +2820,7 @@ cron.schedule('* * * * *', async () => {
     timestamp: now.toISOString()
   });
 
-  const employees = await prisma.user.findMany({
+    const employees = await prisma.user.findMany({
     where: {
       role: 'EMPLOYEE',
       checkInsEnabled: true
@@ -2791,6 +2829,7 @@ cron.schedule('* * * * *', async () => {
       id: true,
       telegramId: true,
       name: true,
+        displayName: true,
       workDays: true,
       workStartMinutes: true,
       workEndMinutes: true,
@@ -2852,9 +2891,10 @@ cron.schedule('* * * * *', async () => {
         continue;
       }
 
+      const employeeLabel = employee.displayName || employee.name;
       log('INFO', 'CRON', 'Triggering randomized check-in', {
         employeeId: employee.id,
-        employeeName: employee.name,
+        employeeName: employeeLabel,
         scheduledAt: nextCheckInAt.toISOString()
       });
 
@@ -2896,12 +2936,12 @@ cron.schedule('* * * * *', async () => {
         try {
           await bot.telegram.sendMessage(
             director.telegramId,
-            `🔔 Запрос на проверку отправлен сотруднику ${employee.name}`
+            `🔔 Запрос на проверку отправлен сотруднику ${employeeLabel}`
           );
           log('INFO', 'CRON', 'Director notified about check-in', {
             directorId: director.id,
             directorTelegramId: director.telegramId,
-            employeeName: employee.name
+            employeeName: employeeLabel
           });
         } catch (error) {
           log('ERROR', 'CRON', 'Error notifying director', {

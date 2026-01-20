@@ -190,6 +190,9 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   };
 
   const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeIds[0]);
+  const selectedEmployeeLabel = selectedEmployee
+    ? (selectedEmployee.displayName || selectedEmployee.name)
+    : '';
 
   return (
     <div className="space-y-4">
@@ -224,6 +227,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                 zone.employees?.some(ze => ze.user?.id === employee.id)
               );
               const isSelected = selectedEmployeeIds.includes(employee.id);
+              const label = employee.displayName || employee.name;
               
               return (
                 <button
@@ -237,7 +241,10 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
-                      <p className="font-medium text-gray-800">{employee.name}</p>
+                      <p className="font-medium text-gray-800">{label}</p>
+                      {employee.displayName && (
+                        <p className="text-xs text-gray-500 mt-0.5">Telegram: {employee.name}</p>
+                      )}
                       <p className="text-sm text-gray-500 mt-1">
                         Зон: {employeeZones.length}
                       </p>
@@ -261,7 +268,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                 </>
               ) : (
                 <>
-                  <strong>Выбран:</strong> {selectedEmployee?.name}
+                  <strong>Выбран:</strong> {selectedEmployeeLabel}
                 </>
               )}
             </p>
@@ -314,7 +321,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       {showForm && selectedLocation && selectedEmployeeIds.length > 0 && (
         <div className="bg-white rounded-lg shadow p-4 relative z-10">
           <h3 className="text-lg font-semibold mb-4">
-            {isShared ? 'Создание общей зоны' : `Создание зоны для ${selectedEmployee?.name || ''}`}
+            {isShared ? 'Создание общей зоны' : `Создание зоны для ${selectedEmployeeLabel}`}
           </h3>
           
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -327,7 +334,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                 value={zoneName}
                 onChange={(e) => setZoneName(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder={`Например: Зона для ${selectedEmployee.name}`}
+                placeholder={`Например: Зона для ${selectedEmployeeLabel}`}
                 required
               />
             </div>
@@ -395,7 +402,9 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           )}
           
           {zones.map((zone) => {
-            const zoneEmployees = zone.employees?.map(ze => ze.user?.name).filter(Boolean) || [];
+            const zoneEmployees = zone.employees?.map((ze) => (
+              ze.user?.displayName || ze.user?.name
+            )).filter(Boolean) || [];
             
             return (
               <div key={zone.id}>
@@ -430,7 +439,9 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           <h3 className="font-semibold mb-2">Активные зоны: {zones.length}</h3>
           <div className="space-y-2">
             {zones.map((zone) => {
-              const zoneEmployees = zone.employees?.map(ze => ze.user?.name).filter(Boolean) || [];
+              const zoneEmployees = zone.employees?.map((ze) => (
+                ze.user?.displayName || ze.user?.name
+              )).filter(Boolean) || [];
               
               return (
                 <div key={zone.id} className="flex items-center justify-between p-3 bg-gray-50 rounded">
