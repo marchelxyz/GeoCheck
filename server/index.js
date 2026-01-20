@@ -579,6 +579,8 @@ const TIMEZONE_OFFSET_MINUTES = Number.parseInt(process.env.TIMEZONE_OFFSET_MINU
 const SCHEDULER_OFFSET_MINUTES = Number.isFinite(TIMEZONE_OFFSET_MINUTES)
   ? TIMEZONE_OFFSET_MINUTES
   : 180;
+const DAILY_SCHEDULE_CRON = process.env.DAILY_SCHEDULE_CRON || '0 2 * * *';
+const MIN_SCHEDULE_GAP_MINUTES = 5;
 
 function parseWorkDays(value) {
   if (Array.isArray(value)) {
@@ -685,6 +687,49 @@ function toUtcDate(date) {
 
 function getSchedulerNow() {
   return toLocalDate(new Date());
+}
+
+function startOfLocalDay(date) {
+  const local = new Date(date);
+  local.setHours(0, 0, 0, 0);
+  return local;
+}
+
+function endOfLocalDay(date) {
+  const local = new Date(date);
+  local.setHours(23, 59, 59, 999);
+  return local;
+}
+
+function generateRandomScheduleTimes(baseDate, count, startMinutes, endMinutes) {
+  if (!count) return [];
+  const normalized = normalizeWorkWindow(startMinutes, endMinutes);
+  const dayStart = buildTimeOnDate(baseDate, normalized.startMinutes);
+  const dayEnd = buildTimeOnDate(baseDate, normalized.endMinutes);
+  const availableMinutes = Math.floor((dayEnd - dayStart) / 60000);
+  if (availableMinutes <= 0) return [];
+
+  const maxSlots = Math.floor(availableMinutes / MIN_SCHEDULE_GAP_MINUTES);
+  const target = Math.min(count, maxSlots);
+  if (target <= 0) return [];
+
+  const picked = new Set();
+  const times = [];
+
+  while (times.length < target) {
+    const offsetMinutes = randomInt(0, availableMinutes - 1);
+    const slot = Math.floor(offsetMinutes / MIN_SCHEDULE_GAP_MINUTES);
+    if (picked.has(slot)) {
+      continue;
+    }
+    picked.add(slot);
+    const scheduled = new Date(dayStart);
+    scheduled.setMinutes(dayStart.getMinutes() + slot * MIN_SCHEDULE_GAP_MINUTES);
+    scheduled.setSeconds(randomInt(5, 55), 0);
+    times.push(scheduled);
+  }
+
+  return times.sort((a, b) => a.getTime() - b.getTime());
 }
 
 // API Routes
@@ -882,6 +927,7 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
         telegramId: true,
         name: true,
         displayName: true,
+        dailyCheckInTarget: true,
         checkInsEnabled: true,
         workDays: true,
         workStartMinutes: true,
@@ -904,6 +950,43 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
       telegramId: req.telegramUser?.id,
       error: error.message,
       stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update employee daily auto-checkin target (Director only)
+app.put('/api/employees/:id/daily-checkins', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: directorId } = req.telegramUser;
+    const { id: employeeId } = req.params;
+    const { dailyCheckInTarget } = req.body || {};
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(directorId) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const parsed = Number(dailyCheckInTarget);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 20) {
+      return res.status(400).json({ error: 'Некорректное количество проверок' });
+    }
+
+    const updatedEmployee = await prisma.user.update({
+      where: { id: employeeId },
+      data: { dailyCheckInTarget: parsed },
+      select: { id: true, name: true, displayName: true, dailyCheckInTarget: true }
+    });
+
+    res.json(updatedEmployee);
+  } catch (error) {
+    log('ERROR', 'EMPLOYEE', 'Error updating daily check-in target', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message
     });
     res.status(500).json({ error: error.message });
   }
@@ -2317,6 +2400,59 @@ app.get('/api/check-ins', verifyTelegramWebApp, async (req, res) => {
   }
 });
 
+// Get daily auto-checkin schedule (Director only)
+app.get('/api/check-ins/schedule', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { employeeId, date } = req.query;
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(id) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (!employeeId) {
+      return res.status(400).json({ error: 'Employee ID is required' });
+    }
+
+    const localDate = date ? new Date(`${date}T00:00:00`) : getSchedulerNow();
+    const dayStartLocal = startOfLocalDay(localDate);
+    const dayEndLocal = endOfLocalDay(localDate);
+    const dayStartUtc = toUtcDate(dayStartLocal);
+    const dayEndUtc = toUtcDate(dayEndLocal);
+
+    const items = await prisma.checkInSchedule.findMany({
+      where: {
+        userId: employeeId,
+        scheduledAt: {
+          gte: dayStartUtc,
+          lte: dayEndUtc
+        }
+      },
+      orderBy: { scheduledAt: 'asc' }
+    });
+
+    res.json({
+      date: dayStartLocal.toISOString(),
+      items: items.map((item) => ({
+        id: item.id,
+        status: item.status,
+        scheduledAt: toLocalDate(item.scheduledAt).toISOString()
+      }))
+    });
+  } catch (error) {
+    log('ERROR', 'CHECKIN', 'Error getting check-in schedule', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Request check-in for specific employee (Director only)
 app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
   try {
@@ -2846,7 +2982,7 @@ cron.schedule('* * * * *', async () => {
     timestamp: now.toISOString()
   });
 
-    const employees = await prisma.user.findMany({
+  const employees = await prisma.user.findMany({
     where: {
       role: 'EMPLOYEE',
       checkInsEnabled: true
@@ -2856,6 +2992,7 @@ cron.schedule('* * * * *', async () => {
       telegramId: true,
       name: true,
         displayName: true,
+      dailyCheckInTarget: true,
       workDays: true,
       workStartMinutes: true,
       workEndMinutes: true,
@@ -2886,6 +3023,7 @@ cron.schedule('* * * * *', async () => {
     ? directors[0].reportDeadlineMinutes
     : 5;
 
+  const nowUtc = toUtcDate(now);
   for (const employee of employees) {
     const workDays = parseWorkDays(employee.workDays);
     const normalized = normalizeWorkWindow(employee.workStartMinutes, employee.workEndMinutes);
@@ -2909,13 +3047,36 @@ cron.schedule('* * * * *', async () => {
       continue;
     }
 
-    if (nextCheckInAt <= now) {
+    const scheduleItem = await prisma.checkInSchedule.findFirst({
+      where: {
+        userId: employee.id,
+        status: 'PENDING',
+        scheduledAt: { lte: nowUtc }
+      },
+      orderBy: { scheduledAt: 'asc' }
+    });
+
+    const scheduledDue = scheduleItem
+      ? toLocalDate(new Date(scheduleItem.scheduledAt))
+      : null;
+
+    const shouldTrigger = scheduledDue
+      ? scheduledDue <= now
+      : nextCheckInAt <= now;
+
+    if (shouldTrigger) {
       if (pendingUserIds.has(employee.id)) {
         const rescheduled = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
         await prisma.user.update({
           where: { id: employee.id },
           data: { nextCheckInAt: toUtcDate(rescheduled) }
         });
+        if (scheduleItem) {
+          await prisma.checkInSchedule.update({
+            where: { id: scheduleItem.id },
+            data: { status: 'SKIPPED' }
+          });
+        }
         continue;
       }
 
@@ -2986,6 +3147,13 @@ cron.schedule('* * * * *', async () => {
         data: { nextCheckInAt: toUtcDate(rescheduled) }
       });
 
+      if (scheduleItem) {
+        await prisma.checkInSchedule.update({
+          where: { id: scheduleItem.id },
+          data: { status: 'SENT' }
+        });
+      }
+
       log('INFO', 'CRON', 'Random check-in completed', {
         employeeId: employee.id,
         checkInRequestId: checkInRequest.id
@@ -2996,6 +3164,77 @@ cron.schedule('* * * * *', async () => {
         data: { nextCheckInAt: toUtcDate(nextCheckInAt) }
       });
     }
+  }
+});
+
+// Daily schedule generation (defaults to 2:00 MSK)
+cron.schedule(DAILY_SCHEDULE_CRON, async () => {
+  try {
+    const now = getSchedulerNow();
+    const todayLocal = startOfLocalDay(now);
+    const todayUtcStart = toUtcDate(todayLocal);
+    const todayUtcEnd = toUtcDate(endOfLocalDay(now));
+
+    const employees = await prisma.user.findMany({
+      where: {
+        role: 'EMPLOYEE',
+        checkInsEnabled: true
+      },
+      select: {
+        id: true,
+        workDays: true,
+        workStartMinutes: true,
+        workEndMinutes: true,
+        dailyCheckInTarget: true
+      }
+    });
+
+    if (employees.length === 0) {
+      return;
+    }
+
+    for (const employee of employees) {
+      const workDays = parseWorkDays(employee.workDays);
+      if (!isWorkingDay(todayLocal, workDays)) {
+        continue;
+      }
+
+      const existingCount = await prisma.checkInSchedule.count({
+        where: {
+          userId: employee.id,
+          scheduledAt: {
+            gte: todayUtcStart,
+            lte: todayUtcEnd
+          }
+        }
+      });
+
+      if (existingCount > 0) {
+        continue;
+      }
+
+      const times = generateRandomScheduleTimes(
+        todayLocal,
+        employee.dailyCheckInTarget ?? 8,
+        employee.workStartMinutes,
+        employee.workEndMinutes
+      );
+
+      if (times.length === 0) {
+        continue;
+      }
+
+      await prisma.checkInSchedule.createMany({
+        data: times.map((time) => ({
+          userId: employee.id,
+          scheduledAt: toUtcDate(time)
+        }))
+      });
+    }
+  } catch (error) {
+    log('ERROR', 'CRON', 'Error generating daily schedules', {
+      error: error.message
+    });
   }
 });
 

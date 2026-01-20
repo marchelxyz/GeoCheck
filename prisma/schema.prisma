@@ -12,6 +12,7 @@ model User {
   telegramId    String           @unique
   name          String?
   displayName   String?
+  dailyCheckInTarget Int         @default(8) // Плановое кол-во авто-проверок в день
   role          UserRole         @default(EMPLOYEE)
   checkInsEnabled Boolean        @default(true)
   notificationsEnabled Boolean   @default(true)  // Уведомления о пропущенных чекинах и вне зоны
@@ -26,6 +27,7 @@ model User {
   zones         ZoneEmployee[]
   createdZones  Zone[]           @relation("ZoneCreator")
   checkInRequests CheckInRequest[]
+  schedules    CheckInSchedule[]
   
   @@map("users")
 }
@@ -89,6 +91,19 @@ model CheckInResult {
   @@map("check_in_results")
 }
 
+model CheckInSchedule {
+  id          String   @id @default(cuid())
+  userId      String
+  scheduledAt DateTime
+  status      CheckInScheduleStatus @default(PENDING)
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, scheduledAt])
+  @@map("check_in_schedules")
+}
+
 model StartMessage {
   telegramId String @id
   messageId  Int
@@ -106,4 +121,10 @@ enum CheckInStatus {
   PENDING
   COMPLETED
   MISSED
+}
+
+enum CheckInScheduleStatus {
+  PENDING
+  SENT
+  SKIPPED
 }
