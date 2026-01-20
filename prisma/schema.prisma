@@ -11,6 +11,7 @@ model User {
   id            String           @id @default(cuid())
   telegramId    String           @unique
   name          String?
+  displayName   String?
   role          UserRole         @default(EMPLOYEE)
   checkInsEnabled Boolean        @default(true)
   notificationsEnabled Boolean   @default(true)  // Уведомления о пропущенных чекинах и вне зоны

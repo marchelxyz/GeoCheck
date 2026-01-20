@@ -72,7 +72,7 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
   const successfulCount = checkIns.filter(c => c.result?.isWithinZone === true).length;
   const failedCount = checkIns.filter(c => c.result?.isWithinZone === false).length;
   const perUserStats = checkIns.reduce((acc, checkIn) => {
-    const name = checkIn.user?.name || 'Без имени';
+    const name = checkIn.user?.displayName || checkIn.user?.name || 'Без имени';
     if (!acc[name]) {
       acc[name] = { total: 0, bad: 0 };
     }
@@ -261,8 +261,11 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
                         <h3 className="text-lg font-semibold text-gray-800">
-                          {user.name}
+                          {user.displayName || user.name}
                         </h3>
+                        {user.displayName && (
+                          <p className="text-xs text-gray-500">Telegram: {user.name}</p>
+                        )}
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
                           isWithinZone
                             ? 'bg-green-100 text-green-800'

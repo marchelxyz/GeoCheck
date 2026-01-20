@@ -11,6 +11,7 @@ export default function DirectorView() {
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scheduleDrafts, setScheduleDrafts] = useState({});
+  const [displayNameDrafts, setDisplayNameDrafts] = useState({});
   const [directorSettings, setDirectorSettings] = useState({
     notificationsEnabled: true,
     weeklyZoneReminderEnabled: true,
@@ -64,14 +65,17 @@ export default function DirectorView() {
 
   useEffect(() => {
     const drafts = {};
+    const nameDrafts = {};
     employees.forEach((employee) => {
       drafts[employee.id] = {
         workDays: parseWorkDays(employee.workDays),
         workStartMinutes: Number.isInteger(employee.workStartMinutes) ? employee.workStartMinutes : 540,
         workEndMinutes: Number.isInteger(employee.workEndMinutes) ? employee.workEndMinutes : 1080
       };
+      nameDrafts[employee.id] = employee.displayName || '';
     });
     setScheduleDrafts(drafts);
+    setDisplayNameDrafts(nameDrafts);
   }, [employees]);
 
   const loadData = async () => {
@@ -209,6 +213,30 @@ export default function DirectorView() {
     }));
   };
 
+  const handleDisplayNameChange = (employeeId, value) => {
+    setDisplayNameDrafts((prev) => ({
+      ...prev,
+      [employeeId]: value
+    }));
+  };
+
+  const handleSaveDisplayName = async (employeeId) => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.put(
+        `/api/employees/${employeeId}/display-name`,
+        { displayName: displayNameDrafts[employeeId] || '' },
+        { headers: { 'x-telegram-init-data': initData } }
+      );
+      setEmployees(employees.map((emp) =>
+        emp.id === employeeId ? { ...emp, displayName: response.data.displayName } : emp
+      ));
+    } catch (error) {
+      console.error('Error updating display name:', error);
+      alert(error.response?.data?.error || 'Ошибка обновления имени сотрудника');
+    }
+  };
+
   const handleToggleWorkDay = (employeeId, dayValue) => {
     const currentDays = scheduleDrafts[employeeId]?.workDays || [];
     const nextDays = currentDays.includes(dayValue)
@@ -263,7 +291,7 @@ export default function DirectorView() {
 
   const handleDeleteEmployee = async (employeeId) => {
     const employee = employees.find(emp => emp.id === employeeId);
-    const employeeName = employee?.name || 'сотрудника';
+    const employeeName = employee?.displayName || employee?.name || 'сотрудника';
     
     if (!confirm(`Вы уверены, что хотите удалить сотрудника "${employeeName}"? Это действие нельзя отменить.`)) {
       return;
@@ -415,7 +443,9 @@ export default function DirectorView() {
                       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
-                            <p className="font-medium text-gray-800">{employee.name}</p>
+                            <p className="font-medium text-gray-800">
+                              {employee.displayName || employee.name}
+                            </p>
                             {employee.checkInsEnabled !== undefined && (
                               <span className={`px-2 py-1 text-xs font-medium rounded ${
                                 employee.checkInsEnabled
@@ -426,6 +456,11 @@ export default function DirectorView() {
                               </span>
                             )}
                           </div>
+                          {employee.displayName && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              Telegram: {employee.name}
+                            </p>
+                          )}
                           <p className="text-sm text-gray-500">
                             Зарегистрирован: {new Date(employee.createdAt).toLocaleDateString('ru-RU')}
                           </p>
@@ -464,6 +499,28 @@ export default function DirectorView() {
                       </div>
 
                       <div className="border-t border-gray-200 pt-4">
+                        <div className="mb-4">
+                          <h3 className="text-sm font-semibold text-gray-700 mb-2">Имя для отображения</h3>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <input
+                              type="text"
+                              className="flex-1 min-w-[220px] rounded border border-gray-300 px-3 py-2 text-sm"
+                              placeholder="Например: Вадим (склад)"
+                              value={displayNameDrafts[employee.id] || ''}
+                              onChange={(event) => handleDisplayNameChange(employee.id, event.target.value)}
+                            />
+                            <button
+                              onClick={() => handleSaveDisplayName(employee.id)}
+                              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+                            >
+                              Сохранить имя
+                            </button>
+                          </div>
+                          <p className="text-xs text-gray-500 mt-2">
+                            Это имя видно только в админке и не меняет имя в Telegram.
+                          </p>
+                        </div>
+
                         <h3 className="text-sm font-semibold text-gray-700 mb-2">Рабочий график</h3>
                         <div className="flex flex-wrap gap-2 mb-3">
                           {weekDays.map((day) => (
