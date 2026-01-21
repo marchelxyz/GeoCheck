@@ -47,6 +47,25 @@ function log(level, category, message, data = {}) {
   }
 }
 
+async function clearCheckInButton(telegramId, messageId, context = {}) {
+  if (!telegramId || !messageId) return;
+  try {
+    await bot.telegram.editMessageReplyMarkup(
+      telegramId,
+      messageId,
+      undefined,
+      { inline_keyboard: [] }
+    );
+  } catch (error) {
+    log('WARN', 'CHECKIN', 'Failed to clear check-in button', {
+      telegramId,
+      telegramMessageId: messageId,
+      error: error.message,
+      ...context
+    });
+  }
+}
+
 async function finalizeCheckInIfReady(requestId) {
   try {
     const request = await prisma.checkInRequest.findUnique({
@@ -73,15 +92,9 @@ async function finalizeCheckInIfReady(requestId) {
     }
 
     if (request.telegramMessageId && request.user?.telegramId) {
-      try {
-        await bot.telegram.deleteMessage(request.user.telegramId, request.telegramMessageId);
-      } catch (error) {
-        log('WARN', 'CHECKIN', 'Failed to delete check-in message', {
-          requestId,
-          telegramMessageId: request.telegramMessageId,
-          error: error.message
-        });
-      }
+      await clearCheckInButton(request.user.telegramId, request.telegramMessageId, {
+        requestId
+      });
     }
 
     return true;
@@ -1913,15 +1926,9 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
         data: { status: 'MISSED' }
       });
       if (pendingRequest.telegramMessageId) {
-        try {
-          await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
-        } catch (error) {
-          log('WARN', 'CHECKIN', 'Failed to delete expired check-in message', {
-            requestId: req.requestId,
-            telegramMessageId: pendingRequest.telegramMessageId,
-            error: error.message
-          });
-        }
+        await clearCheckInButton(user.telegramId, pendingRequest.telegramMessageId, {
+          requestId: req.requestId
+        });
       }
       return res.status(410).json({ error: 'Время на отчет истекло' });
     }
@@ -2045,15 +2052,9 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
         data: { status: 'MISSED' }
       });
       if (pendingRequest.telegramMessageId) {
-        try {
-          await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
-        } catch (error) {
-          log('WARN', 'CHECKIN', 'Failed to delete expired check-in message', {
-            requestId: req.requestId,
-            telegramMessageId: pendingRequest.telegramMessageId,
-            error: error.message
-          });
-        }
+        await clearCheckInButton(user.telegramId, pendingRequest.telegramMessageId, {
+          requestId: req.requestId
+        });
       }
       return res.status(410).json({ error: 'Время на отчет истекло' });
     }
@@ -2440,7 +2441,7 @@ app.get('/api/check-ins/schedule', verifyTelegramWebApp, async (req, res) => {
       items: items.map((item) => ({
         id: item.id,
         status: item.status,
-        scheduledAt: toLocalDate(item.scheduledAt).toISOString()
+        scheduledAtLocal: toLocalDate(item.scheduledAt).toISOString().slice(11, 16)
       }))
     });
   } catch (error) {
@@ -2828,15 +2829,9 @@ bot.on('location', async (ctx) => {
       data: { status: 'MISSED' }
     });
     if (pendingRequest.telegramMessageId) {
-      try {
-        await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
-      } catch (error) {
-        log('WARN', 'BOT', 'Failed to delete expired check-in message', {
-          telegramId: userId,
-          telegramMessageId: pendingRequest.telegramMessageId,
-          error: error.message
-        });
-      }
+      await clearCheckInButton(user.telegramId, pendingRequest.telegramMessageId, {
+        telegramId: userId
+      });
     }
     return ctx.reply('⏱ Время на отчет истекло. Запрос закрыт.');
   }
@@ -2919,15 +2914,9 @@ bot.on('photo', async (ctx) => {
         data: { status: 'MISSED' }
       });
       if (pendingRequest.telegramMessageId) {
-        try {
-          await bot.telegram.deleteMessage(user.telegramId, pendingRequest.telegramMessageId);
-        } catch (error) {
-          log('WARN', 'BOT', 'Failed to delete expired check-in message', {
-            telegramId: userId,
-            telegramMessageId: pendingRequest.telegramMessageId,
-            error: error.message
-          });
-        }
+        await clearCheckInButton(user.telegramId, pendingRequest.telegramMessageId, {
+          telegramId: userId
+        });
       }
       await ctx.reply('⏱ Время на отчет истекло. Запрос закрыт.');
       return;
@@ -3291,10 +3280,12 @@ cron.schedule('* * * * *', async () => {
             select: { telegramId: true }
           });
           if (user?.telegramId) {
-            await bot.telegram.deleteMessage(user.telegramId, item.telegramMessageId);
+            await clearCheckInButton(user.telegramId, item.telegramMessageId, {
+              checkInRequestId: item.id
+            });
           }
         } catch (error) {
-          log('WARN', 'CHECKIN', 'Failed to delete expired check-in message', {
+          log('WARN', 'CHECKIN', 'Failed to clear expired check-in button', {
             checkInRequestId: item.id,
             telegramMessageId: item.telegramMessageId,
             error: error.message
