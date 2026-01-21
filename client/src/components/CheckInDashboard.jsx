@@ -232,8 +232,8 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
             {filteredCheckIns.map((checkIn) => {
               const result = checkIn.result;
               const user = checkIn.user;
-              
-              if (!result || !user) {
+
+              if (!user) {
                 return (
                   <div key={checkIn.id} className="p-4">
                     <p className="text-sm text-gray-500">
@@ -243,21 +243,28 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                 );
               }
 
-              const isWithinZone = result.isWithinZone === true;
-              
+              const isWithinZone = result?.isWithinZone === true;
+              const isOutsideZone = result?.isWithinZone === false;
+
               return (
                 <div key={checkIn.id} className="p-4 hover:bg-gray-50">
                   <div className="flex items-start space-x-4">
                     <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${
-                      isWithinZone ? 'bg-green-100' : 'bg-red-100'
+                      isWithinZone
+                        ? 'bg-green-100'
+                        : isOutsideZone
+                          ? 'bg-red-100'
+                          : 'bg-gray-100'
                     }`}>
                       {isWithinZone ? (
                         <span className="text-2xl">✅</span>
-                      ) : (
+                      ) : isOutsideZone ? (
                         <span className="text-2xl">❌</span>
+                      ) : (
+                        <span className="text-2xl">⏳</span>
                       )}
                     </div>
-                    
+
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
                         <h3 className="text-lg font-semibold text-gray-800">
@@ -269,19 +276,21 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
                           isWithinZone
                             ? 'bg-green-100 text-green-800'
-                            : 'bg-red-100 text-red-800'
+                            : isOutsideZone
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-gray-100 text-gray-600'
                         }`}>
-                          {isWithinZone ? 'В зоне' : 'Вне зоны'}
+                          {isWithinZone ? 'В зоне' : isOutsideZone ? 'Вне зоны' : 'Ожидает'}
                         </span>
                       </div>
-                      
+
                       <div className="mt-2 space-y-1 text-sm text-gray-600">
-                        {result.locationLat && result.locationLon && (
+                        {result?.locationLat && result?.locationLon && (
                           <p>
                             📍 Координаты: {result.locationLat.toFixed(6)}, {result.locationLon.toFixed(6)}
                           </p>
                         )}
-                        {result.distanceToZone !== null && result.distanceToZone !== undefined && (
+                        {result?.distanceToZone !== null && result?.distanceToZone !== undefined && (
                           <p>
                             📏 Расстояние до зоны: {formatDistance(result.distanceToZone)}
                           </p>
@@ -293,8 +302,8 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
                           Статус: {checkIn.status === 'COMPLETED' ? '✅ Завершена' : checkIn.status === 'PENDING' ? '⏳ Ожидает' : checkIn.status === 'MISSED' ? '❌ Пропущена' : checkIn.status}
                         </p>
                       </div>
-                      
-                      {(result.photoPath || result.photoFileId) && (
+
+                      {(result?.photoPath || result?.photoFileId) && (
                         <div className="mt-3">
                           <PhotoDisplay requestId={checkIn.id} />
                         </div>

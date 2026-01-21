@@ -800,7 +800,7 @@ export default function DirectorView() {
                         key={item.id}
                         className="flex items-center justify-between rounded border border-gray-200 px-3 py-2 text-sm"
                       >
-                        <span>{new Date(item.scheduledAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span>{item.scheduledAtLocal || new Date(item.scheduledAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
                         <span className={`text-xs font-medium ${
                           item.status === 'SENT'
                             ? 'text-green-600'
