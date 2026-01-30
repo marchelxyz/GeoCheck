@@ -364,7 +364,7 @@ async function runMigrations(maxRetries = 15, delay = 3000) {
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const ADMIN_GEO_TG = (process.env.ADMIN_GEO_TG || '').trim();
+const ADMIN_GEO_TG = (process.env.ADMIN_GEO_TG || process.env.ADMIN_TELEGRAM_ID || process.env.ADMIN_TG || '').trim();
 const PORT = process.env.PORT || 3000;
 
 if (!BOT_TOKEN) {
