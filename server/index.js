@@ -47,6 +47,59 @@ function log(level, category, message, data = {}) {
   }
 }
 
+function parseDeviceInfo(userAgent, platformHint) {
+  const ua = (userAgent || '').toLowerCase();
+  const platform = (platformHint || '').replace(/"/g, '');
+  const isIpad = ua.includes('ipad');
+  const isIphone = ua.includes('iphone');
+  const isAndroid = ua.includes('android');
+  let os = 'unknown';
+  let deviceType = 'unknown';
+  if (isIphone || isIpad) {
+    os = 'iOS';
+    deviceType = 'ios';
+  } else if (isAndroid) {
+    os = 'Android';
+    deviceType = 'android';
+  } else if (ua.includes('windows')) {
+    os = 'Windows';
+    deviceType = 'desktop';
+  } else if (ua.includes('mac os')) {
+    os = 'macOS';
+    deviceType = 'desktop';
+  } else if (ua.includes('linux')) {
+    os = 'Linux';
+    deviceType = 'desktop';
+  }
+  const isMobile = ua.includes('mobile') || isIphone || isAndroid;
+  return {
+    deviceType,
+    os,
+    isMobile,
+    platform: platform || undefined
+  };
+}
+
+function getRequestDeviceContext(req) {
+  const userAgent = req.get('user-agent') || '';
+  const platformHint = req.get('sec-ch-ua-platform') || '';
+  return {
+    userAgent,
+    deviceInfo: parseDeviceInfo(userAgent, platformHint)
+  };
+}
+
+function getUploadFileMeta(file) {
+  if (!file) {
+    return {};
+  }
+  return {
+    fileSize: file.size,
+    fileType: file.mimetype,
+    originalName: file.originalname
+  };
+}
+
 async function clearCheckInButton(telegramId, messageId, context = {}) {
   if (!telegramId || !messageId) return;
   try {
@@ -1883,13 +1936,18 @@ app.get('/api/check-in/pending', verifyTelegramWebApp, async (req, res) => {
 app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
   try {
     const { id } = req.telegramUser;
-    const { latitude, longitude } = req.body;
+    const { latitude, longitude, accuracy } = req.body;
+    const { userAgent, deviceInfo } = getRequestDeviceContext(req);
 
     log('INFO', 'CHECKIN', 'Submit location for check-in', {
       requestId: req.requestId,
       telegramId: id,
       latitude,
-      longitude
+      longitude,
+      accuracy,
+      ip: req.ip,
+      userAgent,
+      deviceInfo
     });
 
     const user = await prisma.user.findUnique({
@@ -1997,11 +2055,17 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
 app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), async (req, res) => {
   try {
     const { id } = req.telegramUser;
+    const { userAgent, deviceInfo } = getRequestDeviceContext(req);
+    const fileMeta = getUploadFileMeta(req.file);
 
     log('INFO', 'CHECKIN', 'Submit photo for check-in', {
       requestId: req.requestId,
       telegramId: id,
-      hasFile: !!req.file
+      hasFile: !!req.file,
+      ip: req.ip,
+      userAgent,
+      deviceInfo,
+      ...fileMeta
     });
 
     const user = await prisma.user.findUnique({
@@ -2078,7 +2142,8 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
           requestId: req.requestId,
           userId: user.id,
           checkInRequestId: pendingRequest.id,
-          photoPath
+          photoPath,
+          ...fileMeta
         });
       } catch (error) {
         log('ERROR', 'CHECKIN', 'Error uploading photo to S3', {

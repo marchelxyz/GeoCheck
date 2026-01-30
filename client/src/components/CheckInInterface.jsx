@@ -107,7 +107,8 @@ export default function CheckInInterface({ requestId, onComplete }) {
         '/api/check-in/location',
         {
           latitude: position.coords.latitude,
-          longitude: position.coords.longitude
+          longitude: position.coords.longitude,
+          accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
         },
         {
           headers: { 'x-telegram-init-data': initData }
