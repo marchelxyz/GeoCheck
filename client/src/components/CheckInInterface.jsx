@@ -9,12 +9,15 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const [photoError, setPhotoError] = useState(null);
   const [isWithinZone, setIsWithinZone] = useState(null);
   const [distanceToZone, setDistanceToZone] = useState(null);
+  const [locationAccuracy, setLocationAccuracy] = useState(null);
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [geoPermissionDenied, setGeoPermissionDenied] = useState(() => {
     return localStorage.getItem('geoPermissionDenied') === '1';
   });
+  const geoTimeoutMs = 20000;
+  const geoAccuracyThreshold = 150;
 
   const getTelegramInitData = () => {
     return window.Telegram?.WebApp?.initData || '';
@@ -90,58 +93,55 @@ export default function CheckInInterface({ requestId, onComplete }) {
 
     setLoading(true);
     setLocationError(null);
+    setLocationAccuracy(null);
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const initData = getTelegramInitData();
-          const response = await axios.post(
-            '/api/check-in/location',
-            {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude
-            },
-            {
-              headers: { 'x-telegram-init-data': initData }
-            }
-          );
-
-          setLocationSent(true);
-          setIsWithinZone(response.data.isWithinZone);
-          setDistanceToZone(response.data.distanceToZone);
-
-          if (response.data.isWithinZone) {
-            if (window.Telegram?.WebApp) {
-              window.Telegram.WebApp.showAlert('✅ Вы в рабочей зоне!');
-            }
-          } else {
-            if (window.Telegram?.WebApp) {
-              window.Telegram.WebApp.showAlert(`❌ Вы вне рабочей зоны. Расстояние: ${Math.round(response.data.distanceToZone || 0)}м`);
-            }
-          }
-        } catch (error) {
-          console.error('Error sending location:', error);
-          setLocationError(error.response?.data?.error || 'Ошибка отправки геолокации');
-        } finally {
-          setLoading(false);
+    try {
+      const position = await getBestPosition({
+        timeoutMs: geoTimeoutMs,
+        accuracyThreshold: geoAccuracyThreshold,
+        highAccuracy: true,
+        maxAgeMs: 0
+      });
+      const initData = getTelegramInitData();
+      const response = await axios.post(
+        '/api/check-in/location',
+        {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
+        },
+        {
+          headers: { 'x-telegram-init-data': initData }
         }
-      },
-      (error) => {
-        if (error.code === error.PERMISSION_DENIED) {
-          localStorage.setItem('geoPermissionDenied', '1');
-          setGeoPermissionDenied(true);
-          setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
-        } else {
-          setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
-        }
-        setLoading(false);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
+      );
+
+      setLocationSent(true);
+      setIsWithinZone(response.data.isWithinZone);
+      setDistanceToZone(response.data.distanceToZone);
+      if (Number.isFinite(position.coords.accuracy)) {
+        setLocationAccuracy(Math.round(position.coords.accuracy));
       }
-    );
+
+      if (response.data.isWithinZone) {
+        if (window.Telegram?.WebApp) {
+          window.Telegram.WebApp.showAlert('✅ Вы в рабочей зоне!');
+        }
+      } else {
+        if (window.Telegram?.WebApp) {
+          window.Telegram.WebApp.showAlert(`❌ Вы вне рабочей зоны. Расстояние: ${Math.round(response.data.distanceToZone || 0)}м`);
+        }
+      }
+    } catch (error) {
+      if (error?.code === error.PERMISSION_DENIED) {
+        localStorage.setItem('geoPermissionDenied', '1');
+        setGeoPermissionDenied(true);
+        setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
+      } else {
+        setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -204,6 +204,11 @@ export default function CheckInInterface({ requestId, onComplete }) {
                 )}
               </div>
             )}
+            {locationAccuracy !== null && (
+              <div className="mt-2 text-xs text-gray-500">
+                Точность геолокации: ~{locationAccuracy} м
+              </div>
+            )}
             {locationError && (
               <p className="text-sm text-red-600 mt-1">{locationError}</p>
             )}
@@ -262,4 +267,67 @@ export default function CheckInInterface({ requestId, onComplete }) {
       </div>
     </div>
   );
+}
+
+function getBestPosition({ timeoutMs, accuracyThreshold, highAccuracy, maxAgeMs }) {
+  return new Promise((resolve, reject) => {
+    let bestPosition = null;
+    let settled = false;
+    let watchId = null;
+    let timeoutId = null;
+
+    const finish = (result, isError) => {
+      if (settled) return;
+      settled = true;
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      if (isError) {
+        reject(result);
+      } else {
+        resolve(result);
+      }
+    };
+
+    const considerPosition = (position) => {
+      const accuracy = position?.coords?.accuracy;
+      if (!bestPosition || (Number.isFinite(accuracy) && accuracy < bestPosition.coords.accuracy)) {
+        bestPosition = position;
+      }
+      if (Number.isFinite(accuracy) && accuracy <= accuracyThreshold) {
+        finish(position, false);
+      }
+    };
+
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        considerPosition(position);
+      },
+      (error) => {
+        if (bestPosition) {
+          finish(bestPosition, false);
+        } else {
+          finish(error, true);
+        }
+      },
+      {
+        enableHighAccuracy: highAccuracy,
+        timeout: timeoutMs,
+        maximumAge: maxAgeMs
+      }
+    );
+
+    timeoutId = setTimeout(() => {
+      if (bestPosition) {
+        finish(bestPosition, false);
+        return;
+      }
+      const timeoutError = new Error('Geolocation timeout');
+      timeoutError.code = 3;
+      finish(timeoutError, true);
+    }, timeoutMs + 500);
+  });
 }

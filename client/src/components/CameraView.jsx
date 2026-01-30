@@ -6,6 +6,7 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
   const streamRef = useRef(null);
   const [loading, setLoading] = useState(false);
   const [permissionNeeded, setPermissionNeeded] = useState(false);
+  const [userGestureRequired, setUserGestureRequired] = useState(false);
   const [cameraError, setCameraError] = useState(null);
   const [captureLocked, setCaptureLocked] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(() => {
@@ -23,6 +24,7 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
     setLoading(true);
     setCameraError(null);
     setPermissionNeeded(false);
+    setUserGestureRequired(false);
     try {
       const constraints = {
         video: {
@@ -141,11 +143,19 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
       onError?.(message);
       return undefined;
     }
-    if (!permissionDenied) {
-      startCamera();
-    } else {
+    if (permissionDenied) {
+      const message = 'Доступ к камере запрещен. Разрешите доступ в настройках браузера.';
+      setCameraError(message);
+      onError?.(message);
       setPermissionNeeded(true);
+      return undefined;
     }
+    if (isIosDevice()) {
+      setUserGestureRequired(true);
+      setPermissionNeeded(true);
+      return undefined;
+    }
+    startCamera();
     return () => {
       stopStream();
     };
@@ -179,6 +189,11 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
       </div>
       {loading && <p className="text-white mt-4">Загрузка...</p>}
       {cameraError && <p className="text-red-400 mt-4 text-center max-w-md">{cameraError}</p>}
+      {userGestureRequired && !cameraError && (
+        <p className="text-gray-200 mt-3 text-center max-w-md text-sm">
+          Нажмите «Включить камеру», чтобы продолжить.
+        </p>
+      )}
       {permissionNeeded && (
         <button
           onClick={() => {
@@ -189,9 +204,18 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
           className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
           disabled={loading}
         >
-          Разрешить камеру
+          Включить камеру
         </button>
       )}
     </div>
   );
+}
+
+function isIosDevice() {
+  const ua = navigator.userAgent || '';
+  const platform = navigator.platform || '';
+  if (/iPad|iPhone|iPod/i.test(ua)) {
+    return true;
+  }
+  return platform === 'MacIntel' && navigator.maxTouchPoints > 1;
 }
