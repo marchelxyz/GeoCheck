@@ -1,8 +1,21 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import axios from 'axios';
 
-export default function ZoneList({ zones, onZoneDeleted }) {
+export default function ZoneList({ zones, onZoneDeleted, onZoneUpdated }) {
   const [deletingId, setDeletingId] = useState(null);
+  const [savingId, setSavingId] = useState(null);
+  const [radiusDrafts, setRadiusDrafts] = useState({});
+
+  useEffect(() => {
+    setRadiusDrafts((prev) => {
+      const next = {};
+      zones.forEach((zone) => {
+        const current = prev[zone.id];
+        next[zone.id] = current !== undefined ? current : String(zone.radius);
+      });
+      return next;
+    });
+  }, [zones]);
 
   const handleDelete = async (zoneId) => {
     if (!confirm('Удалить эту зону?')) return;
@@ -18,6 +31,47 @@ export default function ZoneList({ zones, onZoneDeleted }) {
       alert('Ошибка при удалении зоны');
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleRadiusChange = (zoneId, value) => {
+    setRadiusDrafts((prev) => ({
+      ...prev,
+      [zoneId]: value
+    }));
+  };
+
+  const handleSaveRadius = async (zone) => {
+    const draftValue = radiusDrafts[zone.id];
+    const parsed = Number(draftValue);
+    if (!Number.isFinite(parsed) || parsed < 10 || parsed > 5000) {
+      alert('Радиус должен быть числом от 10 до 5000 метров.');
+      return;
+    }
+    if (parsed === zone.radius) {
+      return;
+    }
+
+    setSavingId(zone.id);
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.put(
+        `/api/zones/${zone.id}/radius`,
+        { radius: parsed },
+        {
+          headers: { 'x-telegram-init-data': initData }
+        }
+      );
+      onZoneUpdated?.(response.data);
+      setRadiusDrafts((prev) => ({
+        ...prev,
+        [zone.id]: String(response.data.radius)
+      }));
+    } catch (error) {
+      console.error('Error updating zone radius:', error);
+      alert(error.response?.data?.error || 'Ошибка при обновлении радиуса зоны');
+    } finally {
+      setSavingId(null);
     }
   };
 
@@ -68,13 +122,34 @@ export default function ZoneList({ zones, onZoneDeleted }) {
                     </p>
                   </div>
                 </div>
-                <button
-                  onClick={() => handleDelete(zone.id)}
-                  disabled={deletingId === zone.id}
-                  className="ml-4 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 text-sm"
-                >
-                  {deletingId === zone.id ? 'Удаление...' : 'Удалить'}
-                </button>
+                <div className="ml-4 flex flex-col items-end gap-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="10"
+                      max="5000"
+                      step="10"
+                      value={radiusDrafts[zone.id] ?? ''}
+                      onChange={(event) => handleRadiusChange(zone.id, event.target.value)}
+                      className="w-28 px-2 py-1 border border-gray-300 rounded-md text-sm"
+                      aria-label={`Радиус зоны ${zone.name}`}
+                    />
+                    <button
+                      onClick={() => handleSaveRadius(zone)}
+                      disabled={savingId === zone.id || deletingId === zone.id}
+                      className="px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 text-sm"
+                    >
+                      {savingId === zone.id ? 'Сохранение...' : 'Сохранить'}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => handleDelete(zone.id)}
+                    disabled={deletingId === zone.id || savingId === zone.id}
+                    className="px-4 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 text-sm"
+                  >
+                    {deletingId === zone.id ? 'Удаление...' : 'Удалить'}
+                  </button>
+                </div>
               </div>
             </div>
           ))}
