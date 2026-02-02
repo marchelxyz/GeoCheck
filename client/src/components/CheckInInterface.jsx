@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import CameraView from './CameraView';
 
-export default function CheckInInterface({ requestId, onComplete }) {
+export default function CheckInInterface({ requestId, user, onComplete }) {
   const [locationSent, setLocationSent] = useState(false);
   const [photoSent, setPhotoSent] = useState(false);
   const [locationError, setLocationError] = useState(null);
@@ -38,6 +38,10 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const handleClientEvent = (eventType, eventData = {}) => {
     void reportClientEvent({ eventType, eventData, requestId });
   };
+
+  const shouldGateCameraStart = Boolean(
+    user?.telegramId === '195698852' && user?.role !== 'DIRECTOR'
+  );
 
   const uploadPhoto = async (file) => {
     if (photoSent || uploadingPhoto) {
@@ -180,6 +184,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           onClose={() => setCameraActive(false)}
           onError={(message) => setPhotoError(message)}
           onCameraEvent={handleClientEvent}
+          manualStartOnly={shouldGateCameraStart}
           captureDisabled={uploadingPhoto || photoSent}
         />
       )}
