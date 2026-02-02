@@ -19,6 +19,10 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const geoTimeoutMs = 20000;
   const geoAccuracyThreshold = 150;
 
+  useEffect(() => {
+    localStorage.removeItem('cameraPermissionDenied');
+  }, []);
+
   // Проверяем завершение чекинга и закрываем мини-приложение
   useEffect(() => {
     if (locationSent && photoSent) {
