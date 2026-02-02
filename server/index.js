@@ -2051,6 +2051,45 @@ app.post('/api/check-in/location', verifyTelegramWebApp, async (req, res) => {
   }
 });
 
+// Receive client-side diagnostic events for check-in flows
+app.post('/api/check-in/client-event', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id } = req.telegramUser;
+    const { eventType, eventData } = req.body || {};
+    const { userAgent, deviceInfo } = getRequestDeviceContext(req);
+
+    if (!eventType || typeof eventType !== 'string') {
+      log('WARN', 'CHECKIN', 'Invalid client event payload', {
+        requestId: req.requestId,
+        telegramId: id,
+        eventType,
+        eventData
+      });
+      return res.status(400).json({ error: 'Invalid event payload' });
+    }
+
+    log('INFO', 'CHECKIN', 'Client event', {
+      requestId: req.requestId,
+      telegramId: id,
+      eventType,
+      eventData,
+      ip: req.ip,
+      userAgent,
+      deviceInfo
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    log('ERROR', 'CHECKIN', 'Error handling client event', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Submit photo for check-in
 app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), async (req, res) => {
   try {
