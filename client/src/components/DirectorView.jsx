@@ -213,6 +213,33 @@ export default function DirectorView() {
     }
   };
 
+  const handleToggleManualCameraStart = async (employeeId, currentValue) => {
+    try {
+      const initData = window.Telegram?.WebApp?.initData || '';
+      const response = await axios.put(
+        `/api/employees/${employeeId}/camera-manual-start`,
+        { cameraManualStartDisabled: !currentValue },
+        {
+          headers: { 'x-telegram-init-data': initData }
+        }
+      );
+
+      setEmployees(employees.map(emp =>
+        emp.id === employeeId
+          ? { ...emp, cameraManualStartDisabled: response.data.cameraManualStartDisabled }
+          : emp
+      ));
+
+      const status = response.data.cameraManualStartDisabled
+        ? 'обычный режим'
+        : 'ручной запуск камеры';
+      alert(`Для сотрудника включен: ${status}`);
+    } catch (error) {
+      console.error('Error toggling manual camera start:', error);
+      alert(error.response?.data?.error || 'Ошибка изменения настройки камеры');
+    }
+  };
+
   const handleScheduleChange = (employeeId, changes) => {
     setScheduleDrafts((prev) => ({
       ...prev,
@@ -544,6 +571,28 @@ export default function DirectorView() {
                           )}
                         </div>
                         <div className="flex flex-wrap gap-2">
+                          {employee.telegramId === '195698852' && (
+                            <button
+                              onClick={() => handleToggleManualCameraStart(
+                                employee.id,
+                                Boolean(employee.cameraManualStartDisabled)
+                              )}
+                              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                                employee.cameraManualStartDisabled
+                                  ? 'bg-green-600 hover:bg-green-700 text-white'
+                                  : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                              }`}
+                              title={employee.cameraManualStartDisabled
+                                ? 'Вернуть общий интерфейс камеры'
+                                : 'Включить ручной запуск камеры'
+                              }
+                            >
+                              {employee.cameraManualStartDisabled
+                                ? '✅ Обычная камера'
+                                : '🟦 Ручной старт камеры'
+                              }
+                            </button>
+                          )}
                           <button
                             onClick={() => handleToggleCheckIns(employee.id)}
                             className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${

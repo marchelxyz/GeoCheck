@@ -995,6 +995,7 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
         displayName: true,
         dailyCheckInTarget: true,
         checkInsEnabled: true,
+        cameraManualStartDisabled: true,
         workDays: true,
         workStartMinutes: true,
         workEndMinutes: true,
@@ -1016,6 +1017,42 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
       telegramId: req.telegramUser?.id,
       error: error.message,
       stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle manual camera start override for employee (Director only)
+app.put('/api/employees/:id/camera-manual-start', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: directorId } = req.telegramUser;
+    const { id: employeeId } = req.params;
+    const { cameraManualStartDisabled } = req.body || {};
+
+    const director = await prisma.user.findUnique({
+      where: { telegramId: String(directorId) }
+    });
+
+    if (!director || director.role !== 'DIRECTOR') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (typeof cameraManualStartDisabled !== 'boolean') {
+      return res.status(400).json({ error: 'Некорректное значение настройки камеры' });
+    }
+
+    const updatedEmployee = await prisma.user.update({
+      where: { id: employeeId },
+      data: { cameraManualStartDisabled },
+      select: { id: true, cameraManualStartDisabled: true }
+    });
+
+    res.json(updatedEmployee);
+  } catch (error) {
+    log('ERROR', 'EMPLOYEE', 'Error updating camera manual start setting', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message
     });
     res.status(500).json({ error: error.message });
   }

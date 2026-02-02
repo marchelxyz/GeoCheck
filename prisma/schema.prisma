@@ -17,6 +17,7 @@ model User {
   checkInsEnabled Boolean        @default(true)
   notificationsEnabled Boolean   @default(true)  // Уведомления о пропущенных чекинах и вне зоны
   weeklyZoneReminderEnabled Boolean @default(true)  // Напоминание о зонах в понедельник
+  cameraManualStartDisabled Boolean @default(false) // Отключить ручной старт камеры для особого режима
   workDays      String           @default("1,2,3,4,5") // Дни недели (0-6), по умолчанию Пн-Пт
   workStartMinutes Int           @default(540) // 09:00
   workEndMinutes Int             @default(1080) // 18:00

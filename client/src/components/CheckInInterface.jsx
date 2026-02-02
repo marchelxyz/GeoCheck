@@ -40,7 +40,9 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
   };
 
   const shouldGateCameraStart = Boolean(
-    user?.telegramId === '195698852' && user?.role !== 'DIRECTOR'
+    user?.telegramId === '195698852'
+      && user?.role !== 'DIRECTOR'
+      && !user?.cameraManualStartDisabled
   );
 
   const uploadPhoto = async (file) => {
