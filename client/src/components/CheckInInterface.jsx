@@ -19,10 +19,6 @@ export default function CheckInInterface({ requestId, onComplete }) {
   const geoTimeoutMs = 20000;
   const geoAccuracyThreshold = 150;
 
-  const getTelegramInitData = () => {
-    return window.Telegram?.WebApp?.initData || '';
-  };
-
   // Проверяем завершение чекинга и закрываем мини-приложение
   useEffect(() => {
     if (locationSent && photoSent) {
@@ -34,6 +30,10 @@ export default function CheckInInterface({ requestId, onComplete }) {
       }
     }
   }, [locationSent, photoSent, onComplete]);
+
+  const handleClientEvent = (eventType, eventData = {}) => {
+    void reportClientEvent({ eventType, eventData, requestId });
+  };
 
   const uploadPhoto = async (file) => {
     if (photoSent || uploadingPhoto) {
@@ -62,9 +62,17 @@ export default function CheckInInterface({ requestId, onComplete }) {
       );
 
       setPhotoSent(true);
+      handleClientEvent('photo_upload_success', {
+        size: file?.size,
+        type: file?.type
+      });
       return true;
     } catch (error) {
       console.error('Error sending photo:', error);
+      handleClientEvent('photo_upload_error', {
+        status: error?.response?.status,
+        message: error?.message
+      });
       setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
       return false;
     } finally {
@@ -96,6 +104,11 @@ export default function CheckInInterface({ requestId, onComplete }) {
     setLocationAccuracy(null);
 
     try {
+      handleClientEvent('geo_request', {
+        highAccuracy: true,
+        timeoutMs: geoTimeoutMs,
+        accuracyThreshold: geoAccuracyThreshold
+      });
       const position = await getBestPosition({
         timeoutMs: geoTimeoutMs,
         accuracyThreshold: geoAccuracyThreshold,
@@ -121,6 +134,9 @@ export default function CheckInInterface({ requestId, onComplete }) {
       if (Number.isFinite(position.coords.accuracy)) {
         setLocationAccuracy(Math.round(position.coords.accuracy));
       }
+      handleClientEvent('geo_success', {
+        accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
+      });
 
       if (response.data.isWithinZone) {
         if (window.Telegram?.WebApp) {
@@ -132,6 +148,10 @@ export default function CheckInInterface({ requestId, onComplete }) {
         }
       }
     } catch (error) {
+      handleClientEvent('geo_error', {
+        code: error?.code,
+        message: error?.message
+      });
       if (error?.code === error.PERMISSION_DENIED) {
         localStorage.setItem('geoPermissionDenied', '1');
         setGeoPermissionDenied(true);
@@ -155,6 +175,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           }}
           onClose={() => setCameraActive(false)}
           onError={(message) => setPhotoError(message)}
+          onCameraEvent={handleClientEvent}
           captureDisabled={uploadingPhoto || photoSent}
         />
       )}
@@ -267,6 +288,38 @@ export default function CheckInInterface({ requestId, onComplete }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Возвращает initData Telegram WebApp для авторизации запросов.
+ */
+function getTelegramInitData() {
+  return window.Telegram?.WebApp?.initData || '';
+}
+
+/**
+ * Отправляет диагностическое событие клиента на сервер.
+ */
+async function reportClientEvent({ eventType, eventData, requestId }) {
+  if (!eventType) {
+    return;
+  }
+  try {
+    const payload = {
+      eventType,
+      eventData: {
+        ...eventData,
+        checkInRequestId: requestId || undefined
+      }
+    };
+    await axios.post('/api/check-in/client-event', payload, {
+      headers: {
+        'x-telegram-init-data': getTelegramInitData()
+      }
+    });
+  } catch (error) {
+    console.warn('Client event log failed:', error);
+  }
 }
 
 function getBestPosition({ timeoutMs, accuracyThreshold, highAccuracy, maxAgeMs }) {

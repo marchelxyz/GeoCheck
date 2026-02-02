@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function CameraView({ onCapture, onClose, onError, captureDisabled = false }) {
+export default function CameraView({
+  onCapture,
+  onClose,
+  onError,
+  onCameraEvent,
+  captureDisabled = false
+}) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -20,11 +26,16 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
     }
   };
 
-  const startCamera = async () => {
+  const emitCameraEvent = (eventType, eventData = {}) => {
+    onCameraEvent?.(eventType, eventData);
+  };
+
+  const startCamera = async (source = 'auto') => {
     setLoading(true);
     setCameraError(null);
     setPermissionNeeded(false);
     setUserGestureRequired(false);
+    emitCameraEvent('camera_start', { source });
     try {
       const constraints = {
         video: {
@@ -79,13 +90,17 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
         video.addEventListener('error', onErrorEvent);
         video.play().catch(reject);
       });
+      emitCameraEvent('camera_ready', { source });
     } catch (err) {
+      const errorPayload = { source, name: err?.name, message: err?.message };
+      emitCameraEvent('camera_error', errorPayload);
       const message = err?.name === 'NotAllowedError'
         ? 'Разрешите доступ к камере, чтобы сделать фото.'
         : 'Не удалось получить доступ к камере. Проверьте разрешения и попробуйте снова.';
       setCameraError(message);
       setPermissionNeeded(err?.name === 'NotAllowedError');
       if (err?.name === 'NotAllowedError') {
+        emitCameraEvent('camera_permission_denied', errorPayload);
         localStorage.setItem('cameraPermissionDenied', '1');
         setPermissionDenied(true);
       }
@@ -100,6 +115,7 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
     if (!videoRef.current || !canvasRef.current || loading || captureLocked || captureDisabled) return;
     setLoading(true);
     setCaptureLocked(true);
+    emitCameraEvent('camera_capture_click');
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
@@ -126,11 +142,13 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
       setLoading(false);
       if (!blob) {
         const message = 'Не удалось создать файл изображения.';
+        emitCameraEvent('camera_capture_failed', { reason: 'blob_empty' });
         setCameraError(message);
         onError?.(message);
         setCaptureLocked(false);
         return;
       }
+      emitCameraEvent('camera_capture_success', { size: blob.size, type: blob.type });
       const file = new File([blob], 'checkin_photo.jpg', { type: 'image/jpeg' });
       onCapture?.(file);
     }, 'image/jpeg', 0.9);
@@ -139,23 +157,26 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
   useEffect(() => {
     if (!navigator.mediaDevices?.getUserMedia) {
       const message = 'Ваше устройство не поддерживает доступ к камере через браузер.';
+      emitCameraEvent('camera_not_supported');
       setCameraError(message);
       onError?.(message);
       return undefined;
     }
     if (permissionDenied) {
       const message = 'Доступ к камере запрещен. Разрешите доступ в настройках браузера.';
+      emitCameraEvent('camera_permission_cached_denied');
       setCameraError(message);
       onError?.(message);
       setPermissionNeeded(true);
       return undefined;
     }
     if (isIosDevice()) {
+      emitCameraEvent('camera_user_gesture_required');
       setUserGestureRequired(true);
       setPermissionNeeded(true);
       return undefined;
     }
-    startCamera();
+    startCamera('auto');
     return () => {
       stopStream();
     };
@@ -199,7 +220,7 @@ export default function CameraView({ onCapture, onClose, onError, captureDisable
           onClick={() => {
             localStorage.removeItem('cameraPermissionDenied');
             setPermissionDenied(false);
-            startCamera();
+            startCamera('user');
           }}
           className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
           disabled={loading}
