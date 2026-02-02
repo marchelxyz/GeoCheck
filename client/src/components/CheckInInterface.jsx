@@ -116,21 +116,58 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
     setLocationAccuracy(null);
 
     try {
-      const locationSource = telegramLocationAvailable ? 'telegram' : 'browser';
-      handleClientEvent('geo_request', {
-        source: locationSource,
-        highAccuracy: true,
-        timeoutMs: geoTimeoutMs,
-        accuracyThreshold: geoAccuracyThreshold
-      });
-      const position = telegramLocationAvailable
-        ? await getTelegramLocationPosition({ timeoutMs: geoTimeoutMs })
-        : await getBestPosition({
-          timeoutMs: geoTimeoutMs,
-          accuracyThreshold: geoAccuracyThreshold,
+      const locationSources = [];
+      if (telegramLocationAvailable) {
+        locationSources.push('telegram');
+      }
+      if (navigator.geolocation) {
+        locationSources.push('browser');
+      }
+
+      let position = null;
+      let locationSource = null;
+      let lastError = null;
+
+      for (const source of locationSources) {
+        handleClientEvent('geo_request', {
+          source,
           highAccuracy: true,
-          maxAgeMs: 0
+          timeoutMs: geoTimeoutMs,
+          accuracyThreshold: geoAccuracyThreshold
         });
+        try {
+          position = await getLocationFromSource(source, {
+            timeoutMs: geoTimeoutMs,
+            accuracyThreshold: geoAccuracyThreshold,
+            highAccuracy: true,
+            maxAgeMs: 0
+          });
+          locationSource = source;
+          break;
+        } catch (error) {
+          lastError = error;
+          lastError.source = source;
+          handleClientEvent('geo_error', {
+            source,
+            code: error?.code,
+            message: error?.message
+          });
+          if (source === 'browser' && error?.code === error.PERMISSION_DENIED) {
+            localStorage.setItem('geoPermissionDenied', '1');
+            setGeoPermissionDenied(true);
+          }
+        }
+      }
+
+      if (!position) {
+        if (lastError?.source === 'browser' && lastError?.code === lastError.PERMISSION_DENIED) {
+          setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
+        } else {
+          setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
+        }
+        return;
+      }
+
       const initData = getTelegramInitData();
       const response = await axios.post(
         '/api/check-in/location',
@@ -165,18 +202,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         }
       }
     } catch (error) {
-      handleClientEvent('geo_error', {
-        source: telegramLocationAvailable ? 'telegram' : 'browser',
-        code: error?.code,
-        message: error?.message
-      });
-      if (!telegramLocationAvailable && error?.code === error.PERMISSION_DENIED) {
-        localStorage.setItem('geoPermissionDenied', '1');
-        setGeoPermissionDenied(true);
-        setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
-      } else {
-        setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
-      }
+      setLocationError(error?.response?.data?.error || 'Не удалось отправить геолокацию. Попробуйте еще раз.');
     } finally {
       setLoading(false);
     }
@@ -490,4 +516,24 @@ function getTelegramLocationPosition({ timeoutMs }) {
       finish(error, true);
     }, timeoutMs + 500);
   });
+}
+
+/**
+ * Возвращает геолокацию из выбранного источника.
+ */
+function getLocationFromSource(source, options) {
+  if (source === 'telegram') {
+    return getTelegramLocationPosition({ timeoutMs: options.timeoutMs });
+  }
+  if (source === 'browser') {
+    return getBestPosition({
+      timeoutMs: options.timeoutMs,
+      accuracyThreshold: options.accuracyThreshold,
+      highAccuracy: options.highAccuracy,
+      maxAgeMs: options.maxAgeMs
+    });
+  }
+  const error = new Error('Unknown location source');
+  error.code = 'UNKNOWN_LOCATION_SOURCE';
+  return Promise.reject(error);
 }
