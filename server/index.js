@@ -1003,6 +1003,62 @@ app.post('/api/zones', verifyTelegramWebApp, async (req, res) => {
   }
 });
 
+// Update zone radius
+app.put('/api/zones/:id/radius', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: userId } = req.telegramUser;
+    const { id: zoneId } = req.params;
+    const { radius } = req.body || {};
+
+    log('INFO', 'ZONE', 'Update zone radius request', {
+      requestId: req.requestId,
+      zoneId,
+      telegramId: userId,
+      radius
+    });
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: String(userId) }
+    });
+
+    if (!user || user.role !== 'DIRECTOR') {
+      log('WARN', 'ZONE', 'Access denied - not a director', {
+        requestId: req.requestId,
+        telegramId: userId,
+        role: user?.role
+      });
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const parsedRadius = Number(radius);
+    if (!Number.isFinite(parsedRadius) || parsedRadius < 10 || parsedRadius > 5000) {
+      return res.status(400).json({ error: 'Некорректный радиус зоны' });
+    }
+
+    const updatedZone = await prisma.zone.update({
+      where: { id: zoneId },
+      data: { radius: parseFloat(parsedRadius.toFixed(2)) },
+      select: { id: true, radius: true }
+    });
+
+    log('INFO', 'ZONE', 'Zone radius updated', {
+      requestId: req.requestId,
+      zoneId,
+      radius: updatedZone.radius
+    });
+
+    res.json(updatedZone);
+  } catch (error) {
+    log('ERROR', 'ZONE', 'Error updating zone radius', {
+      requestId: req.requestId,
+      telegramId: req.telegramUser?.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Update zone employees
 app.put('/api/zones/:id/employees', verifyTelegramWebApp, async (req, res) => {
   try {

@@ -153,12 +153,20 @@ export default function DirectorView() {
   };
 
   const handleZoneCreated = (newZone) => {
-    setZones([...zones, newZone]);
+    setZones((prev) => [...prev, newZone]);
     loadData(); // Reload to get updated employee assignments
   };
 
   const handleZoneDeleted = (zoneId) => {
-    setZones(zones.filter(z => z.id !== zoneId));
+    setZones((prev) => prev.filter(z => z.id !== zoneId));
+  };
+
+  const handleZoneUpdated = (updatedZone) => {
+    setZones((prev) => prev.map((zone) => (
+      zone.id === updatedZone.id
+        ? { ...zone, ...updatedZone }
+        : zone
+    )));
   };
 
   if (loading) {
@@ -251,6 +259,7 @@ export default function DirectorView() {
           <ZoneList
             zones={zones}
             onZoneDeleted={handleZoneDeleted}
+            onZoneUpdated={handleZoneUpdated}
           />
         )}
         {activeTab === 'employees' && (
