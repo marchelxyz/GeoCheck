@@ -231,6 +231,7 @@ function App() {
     return (
       <CheckInInterface 
         requestId={requestId}
+        user={user}
         onComplete={() => {
           // После завершения проверки можно вернуться к основному интерфейсу
           window.location.href = '/';

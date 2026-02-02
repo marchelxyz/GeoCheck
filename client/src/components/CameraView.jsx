@@ -5,6 +5,7 @@ export default function CameraView({
   onClose,
   onError,
   onCameraEvent,
+  manualStartOnly = false,
   captureDisabled = false
 }) {
   const videoRef = useRef(null);
@@ -15,6 +16,7 @@ export default function CameraView({
   const [userGestureRequired, setUserGestureRequired] = useState(false);
   const [cameraError, setCameraError] = useState(null);
   const [captureLocked, setCaptureLocked] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(() => {
     return localStorage.getItem('cameraPermissionDenied') === '1';
   });
@@ -24,6 +26,7 @@ export default function CameraView({
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
+    setCameraReady(false);
   };
 
   const emitCameraEvent = (eventType, eventData = {}) => {
@@ -35,6 +38,7 @@ export default function CameraView({
     setCameraError(null);
     setPermissionNeeded(false);
     setUserGestureRequired(false);
+    setCameraReady(false);
     emitCameraEvent('camera_start', { source });
     try {
       const constraints = {
@@ -90,6 +94,7 @@ export default function CameraView({
         video.addEventListener('error', onErrorEvent);
         video.play().catch(reject);
       });
+      setCameraReady(true);
       emitCameraEvent('camera_ready', { source });
     } catch (err) {
       const errorPayload = { source, name: err?.name, message: err?.message };
@@ -162,6 +167,14 @@ export default function CameraView({
       onError?.(message);
       return undefined;
     }
+    if (manualStartOnly) {
+      emitCameraEvent('camera_user_gesture_required');
+      setUserGestureRequired(true);
+      setPermissionNeeded(true);
+      return () => {
+        stopStream();
+      };
+    }
     if (permissionDenied) {
       const message = 'Доступ к камере запрещен. Разрешите доступ в настройках браузера.';
       emitCameraEvent('camera_permission_cached_denied');
@@ -180,7 +193,7 @@ export default function CameraView({
     return () => {
       stopStream();
     };
-  }, [permissionDenied]);
+  }, [manualStartOnly, permissionDenied]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex flex-col items-center justify-center p-4">
@@ -193,13 +206,15 @@ export default function CameraView({
       ></video>
       <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
       <div className="mt-4 flex flex-wrap justify-center gap-3">
-        <button
-          onClick={handleCapture}
-          className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-medium rounded-full shadow-lg transition-colors"
-          disabled={loading || captureLocked || captureDisabled}
-        >
-          📷 Сделать фото
-        </button>
+        {(!manualStartOnly || cameraReady) && (
+          <button
+            onClick={handleCapture}
+            className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-medium rounded-full shadow-lg transition-colors"
+            disabled={loading || captureLocked || captureDisabled}
+          >
+            📷 Сделать фото
+          </button>
+        )}
         <button
           onClick={onClose}
           className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-full shadow-lg transition-colors"
