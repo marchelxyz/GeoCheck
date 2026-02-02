@@ -99,12 +99,14 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
   };
 
   const handleSendLocation = async () => {
-    if (!navigator.geolocation) {
+    const telegramLocationAvailable = Boolean(getTelegramLocationManager());
+
+    if (!telegramLocationAvailable && !navigator.geolocation) {
       setLocationError('Геолокация не поддерживается вашим браузером');
       return;
     }
 
-    if (geoPermissionDenied) {
+    if (!telegramLocationAvailable && geoPermissionDenied) {
       setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
       return;
     }
@@ -114,17 +116,21 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
     setLocationAccuracy(null);
 
     try {
+      const locationSource = telegramLocationAvailable ? 'telegram' : 'browser';
       handleClientEvent('geo_request', {
+        source: locationSource,
         highAccuracy: true,
         timeoutMs: geoTimeoutMs,
         accuracyThreshold: geoAccuracyThreshold
       });
-      const position = await getBestPosition({
-        timeoutMs: geoTimeoutMs,
-        accuracyThreshold: geoAccuracyThreshold,
-        highAccuracy: true,
-        maxAgeMs: 0
-      });
+      const position = telegramLocationAvailable
+        ? await getTelegramLocationPosition({ timeoutMs: geoTimeoutMs })
+        : await getBestPosition({
+          timeoutMs: geoTimeoutMs,
+          accuracyThreshold: geoAccuracyThreshold,
+          highAccuracy: true,
+          maxAgeMs: 0
+        });
       const initData = getTelegramInitData();
       const response = await axios.post(
         '/api/check-in/location',
@@ -145,6 +151,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         setLocationAccuracy(Math.round(position.coords.accuracy));
       }
       handleClientEvent('geo_success', {
+        source: locationSource,
         accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
       });
 
@@ -159,10 +166,11 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
       }
     } catch (error) {
       handleClientEvent('geo_error', {
+        source: telegramLocationAvailable ? 'telegram' : 'browser',
         code: error?.code,
         message: error?.message
       });
-      if (error?.code === error.PERMISSION_DENIED) {
+      if (!telegramLocationAvailable && error?.code === error.PERMISSION_DENIED) {
         localStorage.setItem('geoPermissionDenied', '1');
         setGeoPermissionDenied(true);
         setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
@@ -392,6 +400,94 @@ function getBestPosition({ timeoutMs, accuracyThreshold, highAccuracy, maxAgeMs 
       const timeoutError = new Error('Geolocation timeout');
       timeoutError.code = 3;
       finish(timeoutError, true);
+    }, timeoutMs + 500);
+  });
+}
+
+/**
+ * Возвращает Telegram LocationManager, если доступен.
+ */
+function getTelegramLocationManager() {
+  return window.Telegram?.WebApp?.LocationManager || null;
+}
+
+/**
+ * Запрашивает геолокацию через Telegram LocationManager.
+ */
+function getTelegramLocationPosition({ timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const manager = getTelegramLocationManager();
+    if (!manager) {
+      const error = new Error('Telegram LocationManager unavailable');
+      error.code = 'TELEGRAM_LOCATION_UNAVAILABLE';
+      reject(error);
+      return;
+    }
+
+    let settled = false;
+    let timeoutId = null;
+
+    const finish = (result, isError) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      if (isError) {
+        reject(result);
+      } else {
+        resolve(result);
+      }
+    };
+
+    const handleLocation = (locationData) => {
+      if (!locationData
+        || !Number.isFinite(locationData.latitude)
+        || !Number.isFinite(locationData.longitude)
+      ) {
+        const error = new Error('Telegram location not available');
+        error.code = 'TELEGRAM_LOCATION_DENIED';
+        finish(error, true);
+        return;
+      }
+
+      finish({
+        coords: {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          accuracy: Number.isFinite(locationData.horizontal_accuracy)
+            ? locationData.horizontal_accuracy
+            : null
+        }
+      }, false);
+    };
+
+    const requestLocation = () => {
+      try {
+        manager.getLocation(handleLocation);
+      } catch (error) {
+        finish(error, true);
+      }
+    };
+
+    if (manager.isInited) {
+      requestLocation();
+    } else {
+      manager.init((ok) => {
+        if (!ok) {
+          const error = new Error('Telegram LocationManager init failed');
+          error.code = 'TELEGRAM_LOCATION_INIT_FAILED';
+          finish(error, true);
+          return;
+        }
+        requestLocation();
+      });
+    }
+
+    timeoutId = setTimeout(() => {
+      const error = new Error('Telegram location timeout');
+      error.code = 'TELEGRAM_LOCATION_TIMEOUT';
+      finish(error, true);
     }, timeoutMs + 500);
   });
 }
