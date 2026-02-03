@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Circle, useMapEvents } from 'react-leaflet';
+import { useEffect, useState } from 'react';
+import { MapContainer, TileLayer, Marker, Circle, useMap, useMapEvents } from 'react-leaflet';
 import axios from 'axios';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -22,35 +22,62 @@ function MapClickHandler({ onMapClick, disabled }) {
   return null;
 }
 
+function MapCenterUpdater({ center }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!center) return;
+    map.setView(center, map.getZoom(), { animate: true });
+  }, [center, map]);
+
+  return null;
+}
+
+function formatRuAddress(address = {}) {
+  const parts = [
+    address.country,
+    address.state || address.region || address.state_district,
+    address.city || address.town || address.village,
+    address.road,
+    address.house_number
+  ].filter(Boolean);
+
+  return parts.join(', ');
+}
+
 export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees = [] }) {
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [zoneName, setZoneName] = useState('');
   const [radius, setRadius] = useState(100);
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [selectedEmployee, setSelectedEmployee] = useState(null);
-  const defaultCenter = [55.7558, 37.6173];
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
+  const [isShared, setIsShared] = useState(false);
+  const [addressQuery, setAddressQuery] = useState('');
+  const [addressSuggestions, setAddressSuggestions] = useState([]);
+  const [addressLoading, setAddressLoading] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const defaultCenter = [56.2965, 44.0020];
   const [center, setCenter] = useState(defaultCenter);
-
-  useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setCenter([position.coords.latitude, position.coords.longitude]);
-        },
-        () => {}
-      );
-    }
-  }, []);
+  const defaultZoom = 12;
+  const mapInteractionsDisabled = showForm || searchFocused || addressSuggestions.length > 0;
 
   const handleEmployeeSelect = (employee) => {
-    setSelectedEmployee(employee);
     setShowForm(false);
     setSelectedLocation(null);
+    if (isShared) {
+      setSelectedEmployeeIds((prev) => (
+        prev.includes(employee.id)
+          ? prev.filter((id) => id !== employee.id)
+          : [...prev, employee.id]
+      ));
+      return;
+    }
+    setSelectedEmployeeIds([employee.id]);
   };
 
   const handleMapClick = (latlng) => {
-    if (!selectedEmployee) {
+    if (selectedEmployeeIds.length === 0) {
       alert('Пожалуйста, сначала выберите сотрудника из списка');
       return;
     }
@@ -58,13 +85,55 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
     setShowForm(true);
   };
 
+  const handleAddressSelect = (suggestion) => {
+    const lat = parseFloat(suggestion.lat);
+    const lng = parseFloat(suggestion.lon);
+    const formattedAddress = formatRuAddress(suggestion.address);
+    setSelectedLocation({ lat, lng });
+    setCenter([lat, lng]);
+    setShowForm(true);
+    setAddressQuery(formattedAddress || suggestion.display_name);
+    setAddressSuggestions([]);
+  };
+
+  useEffect(() => {
+    const query = addressQuery.trim();
+    if (query.length < 3) {
+      setAddressSuggestions([]);
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setAddressLoading(true);
+      try {
+        const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+          params: {
+            format: 'json',
+            q: query,
+            limit: 5,
+            addressdetails: 1
+          }
+        });
+        setAddressSuggestions(response.data || []);
+      } catch (error) {
+        console.error('Error searching address:', error);
+        setAddressSuggestions([]);
+      } finally {
+        setAddressLoading(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timeoutId);
+  }, [addressQuery]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedLocation || !zoneName.trim() || !selectedEmployee) return;
+    if (!selectedLocation || !zoneName.trim() || selectedEmployeeIds.length === 0) return;
 
     setSubmitting(true);
     try {
       const initData = window.Telegram?.WebApp?.initData || '';
+      const employeeIds = isShared ? selectedEmployeeIds : [selectedEmployeeIds[0]];
       const response = await axios.post(
         '/api/zones',
         {
@@ -72,7 +141,8 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           latitude: selectedLocation.lat,
           longitude: selectedLocation.lng,
           radius: parseFloat(radius),
-          employeeIds: [selectedEmployee.id] // Assign zone to selected employee
+          isShared,
+          employeeIds
         },
         {
           headers: { 'x-telegram-init-data': initData }
@@ -84,8 +154,13 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       setZoneName('');
       setRadius(100);
       setShowForm(false);
-      setSelectedEmployee(null);
-      alert(`Зона "${zoneName}" создана и назначена сотруднику ${selectedEmployee.name}`);
+      setSelectedEmployeeIds([]);
+      if (isShared) {
+        alert(`Общая зона "${zoneName}" создана для ${employeeIds.length} сотрудников`);
+      } else {
+        const selectedEmployee = employees.find((employee) => employee.id === employeeIds[0]);
+        alert(`Зона "${zoneName}" создана и назначена сотруднику ${selectedEmployee?.name || ''}`);
+      }
     } catch (error) {
       console.error('Error creating zone:', error);
       alert(error.response?.data?.error || 'Ошибка при создании зоны');
@@ -111,14 +186,34 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
   const handleCancel = () => {
     setShowForm(false);
     setSelectedLocation(null);
-    setSelectedEmployee(null);
+    setSelectedEmployeeIds([]);
   };
+
+  const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeIds[0]);
+  const selectedEmployeeLabel = selectedEmployee
+    ? (selectedEmployee.displayName || selectedEmployee.name)
+    : '';
 
   return (
     <div className="space-y-4">
       {/* Employee Selection Section */}
       <div className="bg-white rounded-lg shadow p-4">
-        <h2 className="text-lg font-semibold mb-4">Выберите сотрудника для назначения зоны</h2>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+          <h2 className="text-lg font-semibold">Назначение зоны</h2>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={isShared}
+              onChange={(event) => {
+                setIsShared(event.target.checked);
+                setSelectedEmployeeIds([]);
+                setSelectedLocation(null);
+                setShowForm(false);
+              }}
+            />
+            Общая зона для нескольких сотрудников
+          </label>
+        </div>
         
         {employees.length === 0 ? (
           <div className="text-center py-8">
@@ -131,25 +226,30 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
               const employeeZones = zones.filter(zone => 
                 zone.employees?.some(ze => ze.user?.id === employee.id)
               );
+              const isSelected = selectedEmployeeIds.includes(employee.id);
+              const label = employee.displayName || employee.name;
               
               return (
                 <button
                   key={employee.id}
                   onClick={() => handleEmployeeSelect(employee)}
                   className={`p-4 border-2 rounded-lg text-left transition-all ${
-                    selectedEmployee?.id === employee.id
+                    isSelected
                       ? 'border-blue-600 bg-blue-50'
                       : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
                   }`}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex-1">
-                      <p className="font-medium text-gray-800">{employee.name}</p>
+                      <p className="font-medium text-gray-800">{label}</p>
+                      {employee.displayName && (
+                        <p className="text-xs text-gray-500 mt-0.5">Telegram: {employee.name}</p>
+                      )}
                       <p className="text-sm text-gray-500 mt-1">
                         Зон: {employeeZones.length}
                       </p>
                     </div>
-                    {selectedEmployee?.id === employee.id && (
+                    {isSelected && (
                       <span className="text-blue-600 text-xl">✓</span>
                     )}
                   </div>
@@ -159,22 +259,70 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           </div>
         )}
 
-        {selectedEmployee && (
+        {selectedEmployeeIds.length > 0 && (
           <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
             <p className="text-sm text-blue-800">
-              <strong>Выбран:</strong> {selectedEmployee.name}
+              {isShared ? (
+                <>
+                  <strong>Выбрано сотрудников:</strong> {selectedEmployeeIds.length}
+                </>
+              ) : (
+                <>
+                  <strong>Выбран:</strong> {selectedEmployeeLabel}
+                </>
+              )}
             </p>
             <p className="text-xs text-blue-600 mt-1">
-              Нажмите на карту, чтобы выбрать местоположение зоны для этого сотрудника
+              Нажмите на карту, чтобы выбрать местоположение зоны
             </p>
           </div>
         )}
       </div>
 
+      {/* Address Search */}
+      <div className="bg-white rounded-lg shadow p-4 relative z-10">
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Поиск адреса для установки зоны
+        </label>
+        <input
+          type="text"
+          value={addressQuery}
+          onChange={(event) => setAddressQuery(event.target.value)}
+          onFocus={() => setSearchFocused(true)}
+          onBlur={() => {
+            setTimeout(() => setSearchFocused(false), 150);
+          }}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Начните вводить адрес..."
+        />
+        {addressLoading && (
+          <p className="text-xs text-gray-500 mt-2">Поиск...</p>
+        )}
+        {addressSuggestions.length > 0 && (
+          <div className="absolute left-4 right-4 mt-2 bg-white border border-gray-200 rounded-md shadow-lg z-20 max-h-60 overflow-auto">
+            {addressSuggestions.map((suggestion) => (
+              <button
+                key={`${suggestion.place_id}-${suggestion.lat}-${suggestion.lon}`}
+                type="button"
+                onClick={() => handleAddressSelect(suggestion)}
+                className="w-full text-left px-3 py-2 hover:bg-gray-50 text-sm"
+              >
+                {formatRuAddress(suggestion.address) || suggestion.display_name}
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="text-xs text-gray-500 mt-2">
+          Можно выбрать адрес, и метка появится на карте. Сотрудники должны быть выбраны заранее.
+        </p>
+      </div>
+
       {/* Zone Creation Form */}
-      {showForm && selectedLocation && selectedEmployee && (
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="text-lg font-semibold mb-4">Создание зоны для {selectedEmployee.name}</h3>
+      {showForm && selectedLocation && selectedEmployeeIds.length > 0 && (
+        <div className="bg-white rounded-lg shadow p-4 relative z-10">
+          <h3 className="text-lg font-semibold mb-4">
+            {isShared ? 'Создание общей зоны' : `Создание зоны для ${selectedEmployeeLabel}`}
+          </h3>
           
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -186,7 +334,7 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
                 value={zoneName}
                 onChange={(e) => setZoneName(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder={`Например: Зона для ${selectedEmployee.name}`}
+                placeholder={`Например: Зона для ${selectedEmployeeLabel}`}
                 required
               />
             </div>
@@ -228,10 +376,13 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
       )}
 
       {/* Map */}
-      <div className="bg-white rounded-lg shadow overflow-hidden" style={{ height: '500px' }}>
+      <div
+        className="bg-white rounded-lg shadow overflow-hidden relative z-0"
+        style={{ height: '500px', pointerEvents: mapInteractionsDisabled ? 'none' : 'auto' }}
+      >
         <MapContainer
           center={center}
-          zoom={13}
+          zoom={defaultZoom}
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer
@@ -241,15 +392,19 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           
           <MapClickHandler 
             onMapClick={handleMapClick} 
-            disabled={!selectedEmployee}
+            disabled={selectedEmployeeIds.length === 0}
           />
+
+          <MapCenterUpdater center={center} />
           
           {selectedLocation && (
             <Marker position={[selectedLocation.lat, selectedLocation.lng]} />
           )}
           
           {zones.map((zone) => {
-            const zoneEmployees = zone.employees?.map(ze => ze.user?.name).filter(Boolean) || [];
+            const zoneEmployees = zone.employees?.map((ze) => (
+              ze.user?.displayName || ze.user?.name
+            )).filter(Boolean) || [];
             
             return (
               <div key={zone.id}>
@@ -284,13 +439,20 @@ export default function ZoneMap({ zones, onZoneCreated, onZoneDeleted, employees
           <h3 className="font-semibold mb-2">Активные зоны: {zones.length}</h3>
           <div className="space-y-2">
             {zones.map((zone) => {
-              const zoneEmployees = zone.employees?.map(ze => ze.user?.name).filter(Boolean) || [];
+              const zoneEmployees = zone.employees?.map((ze) => (
+                ze.user?.displayName || ze.user?.name
+              )).filter(Boolean) || [];
               
               return (
                 <div key={zone.id} className="flex items-center justify-between p-3 bg-gray-50 rounded">
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{zone.name}</span>
+                      {zone.isShared && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">
+                          Общая
+                        </span>
+                      )}
                       <span className="text-sm text-gray-600">
                         Радиус: {zone.radius}м
                       </span>

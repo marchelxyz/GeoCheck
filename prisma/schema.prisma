@@ -11,15 +11,24 @@ model User {
   id            String           @id @default(cuid())
   telegramId    String           @unique
   name          String?
+  displayName   String?
+  dailyCheckInTarget Int         @default(8) // Плановое кол-во авто-проверок в день
   role          UserRole         @default(EMPLOYEE)
   checkInsEnabled Boolean        @default(true)
   notificationsEnabled Boolean   @default(true)  // Уведомления о пропущенных чекинах и вне зоны
   weeklyZoneReminderEnabled Boolean @default(true)  // Напоминание о зонах в понедельник
+  cameraManualStartDisabled Boolean @default(false) // Отключить ручной старт камеры для особого режима
+  workDays      String           @default("1,2,3,4,5") // Дни недели (0-6), по умолчанию Пн-Пт
+  workStartMinutes Int           @default(540) // 09:00
+  workEndMinutes Int             @default(1080) // 18:00
+  nextCheckInAt DateTime?
+  reportDeadlineMinutes Int      @default(5) // Дедлайн на сдачу отчета, минуты
   createdAt     DateTime         @default(now())
   
   zones         ZoneEmployee[]
   createdZones  Zone[]           @relation("ZoneCreator")
   checkInRequests CheckInRequest[]
+  schedules    CheckInSchedule[]
   
   @@map("users")
 }
@@ -30,6 +39,7 @@ model Zone {
   latitude    Float
   longitude   Float
   radius      Float
+  isShared    Boolean  @default(false) // Общая зона для нескольких сотрудников
   createdBy   String
   createdAt   DateTime @default(now())
   
@@ -57,6 +67,7 @@ model CheckInRequest {
   requestedAt DateTime         @default(now())
   status      CheckInStatus     @default(PENDING)
   telegramMessageId Int?        // ID сообщения в Telegram для обновления после завершения чекинга
+  expiresAt   DateTime?         // Дедлайн на сдачу отчета
   
   user        User              @relation(fields: [userId], references: [id])
   result      CheckInResult?
@@ -81,6 +92,27 @@ model CheckInResult {
   @@map("check_in_results")
 }
 
+model CheckInSchedule {
+  id          String   @id @default(cuid())
+  userId      String
+  scheduledAt DateTime
+  status      CheckInScheduleStatus @default(PENDING)
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, scheduledAt])
+  @@map("check_in_schedules")
+}
+
+model StartMessage {
+  telegramId String @id
+  messageId  Int
+  createdAt  DateTime @default(now())
+
+  @@map("start_messages")
+}
+
 enum UserRole {
   DIRECTOR
   EMPLOYEE
@@ -90,4 +122,10 @@ enum CheckInStatus {
   PENDING
   COMPLETED
   MISSED
+}
+
+enum CheckInScheduleStatus {
+  PENDING
+  SENT
+  SKIPPED
 }

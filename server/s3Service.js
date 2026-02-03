@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
+import fs from 'fs';
 
 // Инициализация S3 клиента для Yandex Cloud
 const s3Client = new S3Client({
@@ -28,10 +29,13 @@ export async function uploadPhoto(fileBuffer, fileName, contentType = 'image/jpe
   }
 
   try {
+    const body = typeof fileBuffer === 'string'
+      ? fs.createReadStream(fileBuffer)
+      : fileBuffer;
     const command = new PutObjectCommand({
       Bucket: BUCKET_NAME,
       Key: `photos/${fileName}`,
-      Body: fileBuffer,
+      Body: body,
       ContentType: contentType,
       // Устанавливаем публичный доступ для чтения (если бакет публичный)
       ACL: 'public-read'
@@ -100,6 +104,87 @@ export async function deletePhoto(fileName) {
     console.log(`✅ Фото удалено из S3: photos/${fileName}`);
   } catch (error) {
     console.error('❌ Ошибка удаления фото из S3:', error);
+    throw error;
+  }
+}
+
+/**
+ * Удаляет объект по полному ключу в S3 (например: "photos/...")
+ * @param {string} key - Полный ключ объекта в S3
+ */
+export async function deletePhotoByKey(key) {
+  if (!BUCKET_NAME) {
+    throw new Error('YC_S3_BUCKET не установлен в переменных окружения');
+  }
+
+  try {
+    const command = new DeleteObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key
+    });
+
+    await s3Client.send(command);
+    console.log(`✅ Фото удалено из S3: ${key}`);
+  } catch (error) {
+    console.error('❌ Ошибка удаления фото из S3:', error);
+    throw error;
+  }
+}
+
+/**
+ * Очищает хранилище фото по правилам
+ * @param {object} options
+ * @param {number} [options.olderThanDays] - удалить файлы старше N дней
+ * @param {number} [options.minSizeBytes] - удалить файлы меньше N байт
+ */
+export async function cleanupPhotos({ olderThanDays, minSizeBytes } = {}) {
+  if (!BUCKET_NAME) {
+    throw new Error('YC_S3_BUCKET не установлен в переменных окружения');
+  }
+
+  const cutoff = olderThanDays
+    ? new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000)
+    : null;
+
+  let continuationToken;
+  let deleted = 0;
+  let scanned = 0;
+
+  try {
+    do {
+      const command = new ListObjectsV2Command({
+        Bucket: BUCKET_NAME,
+        Prefix: 'photos/',
+        ContinuationToken: continuationToken
+      });
+
+      const response = await s3Client.send(command);
+      const contents = response.Contents || [];
+
+      for (const object of contents) {
+        scanned += 1;
+        if (!object.Key || object.Key.endsWith('/')) {
+          continue;
+        }
+
+        const isTooSmall = typeof minSizeBytes === 'number'
+          ? (object.Size || 0) > 0 && object.Size < minSizeBytes
+          : false;
+        const isOld = cutoff ? object.LastModified && object.LastModified < cutoff : false;
+
+        if (isTooSmall || isOld) {
+          await deletePhotoByKey(object.Key);
+          deleted += 1;
+        }
+      }
+
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    console.log(`✅ Очистка фото завершена. Проверено: ${scanned}, удалено: ${deleted}`);
+    return { scanned, deleted };
+  } catch (error) {
+    console.error('❌ Ошибка очистки фото в S3:', error);
     throw error;
   }
 }

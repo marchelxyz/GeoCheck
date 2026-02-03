@@ -1,51 +1,55 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
+import CameraView from './CameraView';
 
-export default function CheckInInterface({ requestId, onComplete }) {
+export default function CheckInInterface({ requestId, user, onComplete }) {
   const [locationSent, setLocationSent] = useState(false);
   const [photoSent, setPhotoSent] = useState(false);
   const [locationError, setLocationError] = useState(null);
   const [photoError, setPhotoError] = useState(null);
   const [isWithinZone, setIsWithinZone] = useState(null);
   const [distanceToZone, setDistanceToZone] = useState(null);
+  const [locationAccuracy, setLocationAccuracy] = useState(null);
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const streamRef = useRef(null);
-
-  const getTelegramInitData = () => {
-    return window.Telegram?.WebApp?.initData || '';
-  };
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [geoPermissionDenied, setGeoPermissionDenied] = useState(() => {
+    return localStorage.getItem('geoPermissionDenied') === '1';
+  });
+  const geoTimeoutMs = 20000;
+  const geoAccuracyThreshold = 150;
 
   useEffect(() => {
-    return () => {
-      // Останавливаем поток камеры при размонтировании компонента
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-    };
+    localStorage.removeItem('cameraPermissionDenied');
   }, []);
 
   // Проверяем завершение чекинга и закрываем мини-приложение
   useEffect(() => {
     if (locationSent && photoSent) {
-      // Небольшая задержка перед закрытием, чтобы пользователь увидел сообщение о завершении
-      const timer = setTimeout(() => {
-        if (window.Telegram?.WebApp) {
-          window.Telegram.WebApp.close();
-        }
-        if (onComplete) {
-          onComplete();
-        }
-      }, 2000); // 2 секунды задержки
-
-      return () => clearTimeout(timer);
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.close();
+      }
+      if (onComplete) {
+        onComplete();
+      }
     }
   }, [locationSent, photoSent, onComplete]);
 
+  const handleClientEvent = (eventType, eventData = {}) => {
+    void reportClientEvent({ eventType, eventData, requestId });
+  };
+
+  const shouldGateCameraStart = Boolean(
+    user?.telegramId === '195698852'
+      && user?.role !== 'DIRECTOR'
+      && !user?.cameraManualStartDisabled
+  );
+
   const uploadPhoto = async (file) => {
-    setLoading(true);
+    if (photoSent || uploadingPhoto) {
+      return true;
+    }
+    setUploadingPhoto(true);
     setPhotoError(null);
 
     try {
@@ -68,268 +72,164 @@ export default function CheckInInterface({ requestId, onComplete }) {
       );
 
       setPhotoSent(true);
-      if (window.Telegram?.WebApp) {
-        window.Telegram.WebApp.showAlert('✅ Фото отправлено!');
-      }
+      handleClientEvent('photo_upload_success', {
+        size: file?.size,
+        type: file?.type
+      });
+      return true;
     } catch (error) {
       console.error('Error sending photo:', error);
-      setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const startCamera = async () => {
-    setLoading(true);
-    setPhotoError(null);
-    
-    try {
-      // Используем фронтальную камеру для мобильных устройств
-      const constraints = {
-        video: {
-          facingMode: { ideal: 'user' }, // Фронтальная камера
-          width: { ideal: 1280, min: 640 },
-          height: { ideal: 720, min: 480 }
-        }
-      };
-
-      // Сначала пробуем с идеальными параметрами
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      } catch (err) {
-        // Если не получилось, пробуем упрощенную конфигурацию
-        console.warn('Failed with ideal constraints, trying simplified:', err);
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: 'user'
-            }
-          });
-        } catch (err2) {
-          // Если и это не сработало, пробуем без указания камеры
-          console.warn('Failed with user camera, trying any camera:', err2);
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: true
-          });
-        }
-      }
-      
-      if (!stream) {
-        throw new Error('Не удалось получить поток камеры');
-      }
-
-      streamRef.current = stream;
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        
-        // Ждем, пока видео элемент будет готов
-        await new Promise((resolve, reject) => {
-          const video = videoRef.current;
-          
-          const onLoadedMetadata = () => {
-            video.removeEventListener('loadedmetadata', onLoadedMetadata);
-            video.removeEventListener('error', onError);
-            resolve();
-          };
-          
-          const onError = (err) => {
-            video.removeEventListener('loadedmetadata', onLoadedMetadata);
-            video.removeEventListener('error', onError);
-            reject(err);
-          };
-          
-          video.addEventListener('loadedmetadata', onLoadedMetadata);
-          video.addEventListener('error', onError);
-          
-          // Пытаемся запустить воспроизведение
-          video.play().catch(reject);
-        });
-        
-        setCameraActive(true);
-        setLoading(false);
-      } else {
-        throw new Error('Video элемент не найден');
-      }
-    } catch (err) {
-      console.error('Error accessing camera with MediaDevices API:', err);
-      setPhotoError('Не удалось получить доступ к камере. Пожалуйста, разрешите доступ к камере в настройках браузера.');
-      setLoading(false);
-      
-      // Останавливаем поток, если он был создан
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
-      
-      // Не используем fallback на input, так как он открывает галерею в Telegram
-      // Вместо этого показываем сообщение пользователю
-      if (window.Telegram?.WebApp) {
-        window.Telegram.WebApp.showAlert(
-          'Не удалось открыть камеру. Пожалуйста:\n\n' +
-          '1. Разрешите доступ к камере в настройках браузера\n' +
-          '2. Убедитесь, что камера не используется другим приложением\n' +
-          '3. Попробуйте перезагрузить страницу'
-        );
-      }
-    }
-  };
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setCameraActive(false);
-  };
-
-  const takePhoto = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    setLoading(true);
-    setPhotoError(null);
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    // Ждем, пока видео будет готово
-    if (video.readyState < 2) {
-      await new Promise((resolve) => {
-        if (video.readyState >= 2) {
-          resolve();
-          return;
-        }
-        const onLoadedMetadata = () => {
-          video.removeEventListener('loadedmetadata', onLoadedMetadata);
-          resolve();
-        };
-        video.addEventListener('loadedmetadata', onLoadedMetadata);
+      handleClientEvent('photo_upload_error', {
+        status: error?.response?.status,
+        message: error?.message
       });
+      setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
+      return false;
+    } finally {
+      setUploadingPhoto(false);
     }
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext('2d');
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    canvas.toBlob(async (blob) => {
-      if (!blob) {
-        setPhotoError('Не удалось создать файл изображения.');
-        setLoading(false);
-        return;
-      }
-
-      const file = new File([blob], 'checkin_photo.jpg', { type: 'image/jpeg' });
-      await uploadPhoto(file);
-      stopCamera();
-    }, 'image/jpeg', 0.9);
   };
 
   const handleSendPhoto = async () => {
-    // Проверяем поддержку MediaDevices API
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setPhotoError('Ваш браузер не поддерживает доступ к камере. Пожалуйста, используйте современный браузер или обновите Telegram.');
-      if (window.Telegram?.WebApp) {
-        window.Telegram.WebApp.showAlert('Ваш браузер не поддерживает доступ к камере. Пожалуйста, обновите Telegram до последней версии.');
-      }
+    if (photoSent || uploadingPhoto) {
       return;
     }
-
-    // Прямой вызов камеры через MediaDevices API
-    await startCamera();
+    setPhotoError(null);
+    setCameraActive(true);
   };
 
   const handleSendLocation = async () => {
-    if (!navigator.geolocation) {
+    const telegramLocationAvailable = Boolean(getTelegramLocationManager());
+
+    if (!telegramLocationAvailable && !navigator.geolocation) {
       setLocationError('Геолокация не поддерживается вашим браузером');
+      return;
+    }
+
+    if (!telegramLocationAvailable && geoPermissionDenied) {
+      setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
       return;
     }
 
     setLoading(true);
     setLocationError(null);
+    setLocationAccuracy(null);
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const initData = getTelegramInitData();
-          const response = await axios.post(
-            '/api/check-in/location',
-            {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude
-            },
-            {
-              headers: { 'x-telegram-init-data': initData }
-            }
-          );
-
-          setLocationSent(true);
-          setIsWithinZone(response.data.isWithinZone);
-          setDistanceToZone(response.data.distanceToZone);
-
-          if (response.data.isWithinZone) {
-            if (window.Telegram?.WebApp) {
-              window.Telegram.WebApp.showAlert('✅ Вы в рабочей зоне!');
-            }
-          } else {
-            if (window.Telegram?.WebApp) {
-              window.Telegram.WebApp.showAlert(`❌ Вы вне рабочей зоны. Расстояние: ${Math.round(response.data.distanceToZone || 0)}м`);
-            }
-          }
-        } catch (error) {
-          console.error('Error sending location:', error);
-          setLocationError(error.response?.data?.error || 'Ошибка отправки геолокации');
-        } finally {
-          setLoading(false);
-        }
-      },
-      (error) => {
-        setLocationError('Не удалось получить геолокацию. Пожалуйста, разрешите доступ к геолокации.');
-        setLoading(false);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
+    try {
+      const locationSources = [];
+      if (telegramLocationAvailable) {
+        locationSources.push('telegram');
       }
-    );
+      if (navigator.geolocation) {
+        locationSources.push('browser');
+      }
+
+      let position = null;
+      let locationSource = null;
+      let lastError = null;
+
+      for (const source of locationSources) {
+        handleClientEvent('geo_request', {
+          source,
+          highAccuracy: true,
+          timeoutMs: geoTimeoutMs,
+          accuracyThreshold: geoAccuracyThreshold
+        });
+        try {
+          position = await getLocationFromSource(source, {
+            timeoutMs: geoTimeoutMs,
+            accuracyThreshold: geoAccuracyThreshold,
+            highAccuracy: true,
+            maxAgeMs: 0
+          });
+          locationSource = source;
+          break;
+        } catch (error) {
+          lastError = error;
+          lastError.source = source;
+          handleClientEvent('geo_error', {
+            source,
+            code: error?.code,
+            message: error?.message
+          });
+          if (source === 'browser' && error?.code === error.PERMISSION_DENIED) {
+            localStorage.setItem('geoPermissionDenied', '1');
+            setGeoPermissionDenied(true);
+          }
+        }
+      }
+
+      if (!position) {
+        if (lastError?.source === 'browser' && lastError?.code === lastError.PERMISSION_DENIED) {
+          setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
+        } else {
+          setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
+        }
+        return;
+      }
+
+      const initData = getTelegramInitData();
+      const response = await axios.post(
+        '/api/check-in/location',
+        {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
+        },
+        {
+          headers: { 'x-telegram-init-data': initData }
+        }
+      );
+
+      setLocationSent(true);
+      setIsWithinZone(response.data.isWithinZone);
+      setDistanceToZone(response.data.distanceToZone);
+      if (Number.isFinite(position.coords.accuracy)) {
+        setLocationAccuracy(Math.round(position.coords.accuracy));
+      }
+      handleClientEvent('geo_success', {
+        source: locationSource,
+        accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
+      });
+
+      if (response.data.isWithinZone) {
+        if (window.Telegram?.WebApp) {
+          window.Telegram.WebApp.showAlert('✅ Вы в рабочей зоне!');
+        }
+      } else {
+        if (window.Telegram?.WebApp) {
+          window.Telegram.WebApp.showAlert(`❌ Вы вне рабочей зоны. Расстояние: ${Math.round(response.data.distanceToZone || 0)}м`);
+        }
+      }
+    } catch (error) {
+      setLocationError(error?.response?.data?.error || 'Не удалось отправить геолокацию. Попробуйте еще раз.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       {/* Модальное окно с камерой */}
       {cameraActive && (
-        <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex flex-col items-center justify-center p-4">
-          <video 
-            ref={videoRef} 
-            className="max-w-full max-h-[70vh] object-contain rounded-lg"
-            autoPlay 
-            playsInline
-            muted
-          ></video>
-          <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
-          <div className="mt-4 flex space-x-4">
-            <button
-              onClick={takePhoto}
-              className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-medium rounded-full shadow-lg transition-colors"
-              disabled={loading}
-            >
-              📷 Сделать фото
-            </button>
-            <button
-              onClick={stopCamera}
-              className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-full shadow-lg transition-colors"
-              disabled={loading}
-            >
-              ✕ Отмена
-            </button>
+        <CameraView
+          onCapture={async (file) => {
+            setCameraActive(false);
+            await uploadPhoto(file);
+          }}
+          onClose={() => setCameraActive(false)}
+          onError={(message) => setPhotoError(message)}
+          onCameraEvent={handleClientEvent}
+          manualStartOnly={shouldGateCameraStart}
+          captureDisabled={uploadingPhoto || photoSent}
+        />
+      )}
+      {uploadingPhoto && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-xl px-6 py-4 shadow-lg flex items-center gap-3">
+            <div className="h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            <span className="text-sm text-gray-700">Загрузка фото...</span>
           </div>
-          {loading && <p className="text-white mt-4">Загрузка...</p>}
-          {photoError && <p className="text-red-400 mt-4 text-center max-w-md">{photoError}</p>}
         </div>
       )}
 
@@ -370,6 +270,11 @@ export default function CheckInInterface({ requestId, onComplete }) {
                 )}
               </div>
             )}
+            {locationAccuracy !== null && (
+              <div className="mt-2 text-xs text-gray-500">
+                Точность геолокации: ~{locationAccuracy} м
+              </div>
+            )}
             {locationError && (
               <p className="text-sm text-red-600 mt-1">{locationError}</p>
             )}
@@ -394,7 +299,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           <div className="space-y-3">
             <button
               onClick={handleSendLocation}
-              disabled={locationSent || loading}
+              disabled={locationSent || loading || uploadingPhoto}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -406,7 +311,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
 
             <button
               onClick={handleSendPhoto}
-              disabled={photoSent || loading || cameraActive}
+              disabled={photoSent || loading || cameraActive || uploadingPhoto}
               className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -420,7 +325,7 @@ export default function CheckInInterface({ requestId, onComplete }) {
           {locationSent && photoSent && (
             <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
               <p className="text-sm text-green-800 text-center">
-                ✅ Проверка завершена! Все данные отправлены. Приложение закроется автоматически...
+                ✅ Проверка завершена! Приложение закроется автоматически.
               </p>
             </div>
           )}
@@ -428,4 +333,207 @@ export default function CheckInInterface({ requestId, onComplete }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Возвращает initData Telegram WebApp для авторизации запросов.
+ */
+function getTelegramInitData() {
+  return window.Telegram?.WebApp?.initData || '';
+}
+
+/**
+ * Отправляет диагностическое событие клиента на сервер.
+ */
+async function reportClientEvent({ eventType, eventData, requestId }) {
+  if (!eventType) {
+    return;
+  }
+  try {
+    const payload = {
+      eventType,
+      eventData: {
+        ...eventData,
+        checkInRequestId: requestId || undefined
+      }
+    };
+    await axios.post('/api/check-in/client-event', payload, {
+      headers: {
+        'x-telegram-init-data': getTelegramInitData()
+      }
+    });
+  } catch (error) {
+    console.warn('Client event log failed:', error);
+  }
+}
+
+function getBestPosition({ timeoutMs, accuracyThreshold, highAccuracy, maxAgeMs }) {
+  return new Promise((resolve, reject) => {
+    let bestPosition = null;
+    let settled = false;
+    let watchId = null;
+    let timeoutId = null;
+
+    const finish = (result, isError) => {
+      if (settled) return;
+      settled = true;
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      if (isError) {
+        reject(result);
+      } else {
+        resolve(result);
+      }
+    };
+
+    const considerPosition = (position) => {
+      const accuracy = position?.coords?.accuracy;
+      if (!bestPosition || (Number.isFinite(accuracy) && accuracy < bestPosition.coords.accuracy)) {
+        bestPosition = position;
+      }
+      if (Number.isFinite(accuracy) && accuracy <= accuracyThreshold) {
+        finish(position, false);
+      }
+    };
+
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        considerPosition(position);
+      },
+      (error) => {
+        if (bestPosition) {
+          finish(bestPosition, false);
+        } else {
+          finish(error, true);
+        }
+      },
+      {
+        enableHighAccuracy: highAccuracy,
+        timeout: timeoutMs,
+        maximumAge: maxAgeMs
+      }
+    );
+
+    timeoutId = setTimeout(() => {
+      if (bestPosition) {
+        finish(bestPosition, false);
+        return;
+      }
+      const timeoutError = new Error('Geolocation timeout');
+      timeoutError.code = 3;
+      finish(timeoutError, true);
+    }, timeoutMs + 500);
+  });
+}
+
+/**
+ * Возвращает Telegram LocationManager, если доступен.
+ */
+function getTelegramLocationManager() {
+  return window.Telegram?.WebApp?.LocationManager || null;
+}
+
+/**
+ * Запрашивает геолокацию через Telegram LocationManager.
+ */
+function getTelegramLocationPosition({ timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const manager = getTelegramLocationManager();
+    if (!manager) {
+      const error = new Error('Telegram LocationManager unavailable');
+      error.code = 'TELEGRAM_LOCATION_UNAVAILABLE';
+      reject(error);
+      return;
+    }
+
+    let settled = false;
+    let timeoutId = null;
+
+    const finish = (result, isError) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      if (isError) {
+        reject(result);
+      } else {
+        resolve(result);
+      }
+    };
+
+    const handleLocation = (locationData) => {
+      if (!locationData
+        || !Number.isFinite(locationData.latitude)
+        || !Number.isFinite(locationData.longitude)
+      ) {
+        const error = new Error('Telegram location not available');
+        error.code = 'TELEGRAM_LOCATION_DENIED';
+        finish(error, true);
+        return;
+      }
+
+      finish({
+        coords: {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          accuracy: Number.isFinite(locationData.horizontal_accuracy)
+            ? locationData.horizontal_accuracy
+            : null
+        }
+      }, false);
+    };
+
+    const requestLocation = () => {
+      try {
+        manager.getLocation(handleLocation);
+      } catch (error) {
+        finish(error, true);
+      }
+    };
+
+    if (manager.isInited) {
+      requestLocation();
+    } else {
+      manager.init((ok) => {
+        if (!ok) {
+          const error = new Error('Telegram LocationManager init failed');
+          error.code = 'TELEGRAM_LOCATION_INIT_FAILED';
+          finish(error, true);
+          return;
+        }
+        requestLocation();
+      });
+    }
+
+    timeoutId = setTimeout(() => {
+      const error = new Error('Telegram location timeout');
+      error.code = 'TELEGRAM_LOCATION_TIMEOUT';
+      finish(error, true);
+    }, timeoutMs + 500);
+  });
+}
+
+/**
+ * Возвращает геолокацию из выбранного источника.
+ */
+function getLocationFromSource(source, options) {
+  if (source === 'telegram') {
+    return getTelegramLocationPosition({ timeoutMs: options.timeoutMs });
+  }
+  if (source === 'browser') {
+    return getBestPosition({
+      timeoutMs: options.timeoutMs,
+      accuracyThreshold: options.accuracyThreshold,
+      highAccuracy: options.highAccuracy,
+      maxAgeMs: options.maxAgeMs
+    });
+  }
+  const error = new Error('Unknown location source');
+  error.code = 'UNKNOWN_LOCATION_SOURCE';
+  return Promise.reject(error);
 }

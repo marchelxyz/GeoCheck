@@ -135,7 +135,6 @@ export default function ZoneList({ zones, employees = [], onZoneDeleted, onZoneU
       setSavingEmployeesId(null);
     }
   };
-
   if (zones.length === 0) {
     return (
       <div className="bg-white rounded-lg shadow p-8 text-center">
