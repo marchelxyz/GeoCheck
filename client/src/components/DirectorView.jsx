@@ -250,6 +250,7 @@ export default function DirectorView() {
         {activeTab === 'zones' && (
           <ZoneList
             zones={zones}
+            employees={employees}
             onZoneDeleted={handleZoneDeleted}
           />
         )}
