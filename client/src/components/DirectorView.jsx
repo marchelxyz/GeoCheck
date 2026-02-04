@@ -79,9 +79,14 @@ export default function DirectorView() {
         workEndMinutes: Number.isInteger(employee.workEndMinutes) ? employee.workEndMinutes : 1080
       };
       nameDrafts[employee.id] = employee.displayName || '';
-      dailyDrafts[employee.id] = Number.isInteger(employee.dailyCheckInTarget)
-        ? employee.dailyCheckInTarget
-        : 8;
+      const pendingTarget = Number.isInteger(employee.dailyCheckInTargetPending)
+        ? employee.dailyCheckInTargetPending
+        : null;
+      dailyDrafts[employee.id] = pendingTarget ?? (
+        Number.isInteger(employee.dailyCheckInTarget)
+          ? employee.dailyCheckInTarget
+          : 8
+      );
     });
     setScheduleDrafts(drafts);
     setDisplayNameDrafts(nameDrafts);
@@ -291,7 +296,12 @@ export default function DirectorView() {
       );
       setEmployees(employees.map((emp) =>
         emp.id === employeeId
-          ? { ...emp, dailyCheckInTarget: response.data.dailyCheckInTarget }
+          ? {
+              ...emp,
+              dailyCheckInTarget: response.data.dailyCheckInTarget,
+              dailyCheckInTargetPending: response.data.dailyCheckInTargetPending,
+              dailyCheckInTargetPendingFrom: response.data.dailyCheckInTargetPendingFrom
+            }
           : emp
       ));
     } catch (error) {
@@ -544,6 +554,12 @@ export default function DirectorView() {
                     workStartMinutes: employee.workStartMinutes || 540,
                     workEndMinutes: employee.workEndMinutes || 1080
                   };
+                  const pendingDailyTarget = Number.isInteger(employee.dailyCheckInTargetPending)
+                    ? employee.dailyCheckInTargetPending
+                    : null;
+                  const pendingDailyFrom = employee.dailyCheckInTargetPendingFrom
+                    ? new Date(employee.dailyCheckInTargetPendingFrom)
+                    : null;
                   
                   return (
                     <div
@@ -680,6 +696,12 @@ export default function DirectorView() {
                               Сохранить
                             </button>
                           </div>
+                          {pendingDailyTarget !== null && pendingDailyFrom && (
+                            <p className="mt-1 text-xs text-gray-500">
+                              Сейчас действует: {employee.dailyCheckInTarget ?? 8}. Новое значение вступит с{' '}
+                              {pendingDailyFrom.toLocaleDateString('ru-RU')}.
+                            </p>
+                          )}
                         </div>
 
                         <h3 className="text-sm font-semibold text-gray-700 mb-2">Рабочий график</h3>

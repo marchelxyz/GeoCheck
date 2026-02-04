@@ -13,6 +13,8 @@ model User {
   name          String?
   displayName   String?
   dailyCheckInTarget Int         @default(8) // Плановое кол-во авто-проверок в день
+  dailyCheckInTargetPending Int?
+  dailyCheckInTargetPendingFrom DateTime?
   role          UserRole         @default(EMPLOYEE)
   checkInsEnabled Boolean        @default(true)
   notificationsEnabled Boolean   @default(true)  // Уведомления о пропущенных чекинах и вне зоны

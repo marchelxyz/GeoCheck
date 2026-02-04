@@ -767,6 +767,15 @@ function endOfLocalDay(date) {
   return local;
 }
 
+/**
+ * Returns the start of the next local day.
+ */
+function getNextLocalDayStart(date) {
+  const next = startOfLocalDay(date);
+  next.setDate(next.getDate() + 1);
+  return next;
+}
+
 function generateRandomScheduleTimes(baseDate, count, startMinutes, endMinutes) {
   if (!count) return [];
   const normalized = normalizeWorkWindow(startMinutes, endMinutes);
@@ -994,6 +1003,8 @@ app.get('/api/employees', verifyTelegramWebApp, async (req, res) => {
         name: true,
         displayName: true,
         dailyCheckInTarget: true,
+        dailyCheckInTargetPending: true,
+        dailyCheckInTargetPendingFrom: true,
         checkInsEnabled: true,
         cameraManualStartDisabled: true,
         workDays: true,
@@ -1078,11 +1089,57 @@ app.put('/api/employees/:id/daily-checkins', verifyTelegramWebApp, async (req, r
       return res.status(400).json({ error: 'Некорректное количество проверок' });
     }
 
-    const updatedEmployee = await prisma.user.update({
+    const employee = await prisma.user.findUnique({
       where: { id: employeeId },
-      data: { dailyCheckInTarget: parsed },
-      select: { id: true, name: true, displayName: true, dailyCheckInTarget: true }
+      select: {
+        id: true,
+        name: true,
+        displayName: true,
+        dailyCheckInTarget: true,
+        dailyCheckInTargetPending: true,
+        dailyCheckInTargetPendingFrom: true
+      }
     });
+
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    let updatedEmployee;
+    if (parsed === employee.dailyCheckInTarget) {
+      updatedEmployee = await prisma.user.update({
+        where: { id: employeeId },
+        data: {
+          dailyCheckInTargetPending: null,
+          dailyCheckInTargetPendingFrom: null
+        },
+        select: {
+          id: true,
+          name: true,
+          displayName: true,
+          dailyCheckInTarget: true,
+          dailyCheckInTargetPending: true,
+          dailyCheckInTargetPendingFrom: true
+        }
+      });
+    } else {
+      const nextLocalStart = getNextLocalDayStart(getSchedulerNow());
+      updatedEmployee = await prisma.user.update({
+        where: { id: employeeId },
+        data: {
+          dailyCheckInTargetPending: parsed,
+          dailyCheckInTargetPendingFrom: toUtcDate(nextLocalStart)
+        },
+        select: {
+          id: true,
+          name: true,
+          displayName: true,
+          dailyCheckInTarget: true,
+          dailyCheckInTargetPending: true,
+          dailyCheckInTargetPendingFrom: true
+        }
+      });
+    }
 
     res.json(updatedEmployee);
   } catch (error) {
@@ -3371,7 +3428,9 @@ cron.schedule(DAILY_SCHEDULE_CRON, async () => {
         workDays: true,
         workStartMinutes: true,
         workEndMinutes: true,
-        dailyCheckInTarget: true
+        dailyCheckInTarget: true,
+        dailyCheckInTargetPending: true,
+        dailyCheckInTargetPendingFrom: true
       }
     });
 
@@ -3380,6 +3439,30 @@ cron.schedule(DAILY_SCHEDULE_CRON, async () => {
     }
 
     for (const employee of employees) {
+      const pendingTarget = Number.isInteger(employee.dailyCheckInTargetPending)
+        ? employee.dailyCheckInTargetPending
+        : null;
+      const pendingFromLocal = employee.dailyCheckInTargetPendingFrom
+        ? toLocalDate(new Date(employee.dailyCheckInTargetPendingFrom))
+        : null;
+      const shouldApplyPending = pendingTarget !== null
+        && pendingFromLocal
+        && pendingFromLocal <= todayLocal;
+
+      if (shouldApplyPending) {
+        await prisma.user.update({
+          where: { id: employee.id },
+          data: {
+            dailyCheckInTarget: pendingTarget,
+            dailyCheckInTargetPending: null,
+            dailyCheckInTargetPendingFrom: null
+          }
+        });
+      }
+
+      const effectiveDailyTarget = shouldApplyPending
+        ? pendingTarget
+        : employee.dailyCheckInTarget;
       const workDays = parseWorkDays(employee.workDays);
       if (!isWorkingDay(todayLocal, workDays)) {
         continue;
@@ -3401,7 +3484,7 @@ cron.schedule(DAILY_SCHEDULE_CRON, async () => {
 
       const times = generateRandomScheduleTimes(
         todayLocal,
-        employee.dailyCheckInTarget ?? 8,
+        effectiveDailyTarget ?? 8,
         employee.workStartMinutes,
         employee.workEndMinutes
       );
