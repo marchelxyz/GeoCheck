@@ -3305,7 +3305,7 @@ cron.schedule('* * * * *', async () => {
 
     const shouldTrigger = scheduledDue
       ? scheduledDue <= now
-      : nextCheckInAt <= now;
+      : false;
 
     if (shouldTrigger) {
       if (pendingUserIds.has(employee.id)) {
@@ -3334,7 +3334,8 @@ cron.schedule('* * * * *', async () => {
         data: {
           userId: employee.id,
           status: 'PENDING',
-          expiresAt: new Date(Date.now() + defaultDeadlineMinutes * 60 * 1000)
+          expiresAt: new Date(Date.now() + defaultDeadlineMinutes * 60 * 1000),
+          scheduleId: scheduleItem?.id
         }
       });
 
@@ -3540,7 +3541,7 @@ cron.schedule('* * * * *', async () => {
         status: 'PENDING',
         expiresAt: { lt: now }
       },
-      select: { id: true, userId: true, telegramMessageId: true }
+      select: { id: true, userId: true, telegramMessageId: true, scheduleId: true }
     });
 
     if (expired.length === 0) {
@@ -3551,6 +3552,19 @@ cron.schedule('* * * * *', async () => {
       where: { id: { in: expired.map((item) => item.id) } },
       data: { status: 'MISSED' }
     });
+
+    const expiredScheduleIds = expired
+      .map((item) => item.scheduleId)
+      .filter((value) => Boolean(value));
+    if (expiredScheduleIds.length > 0) {
+      await prisma.checkInSchedule.updateMany({
+        where: {
+          id: { in: expiredScheduleIds },
+          status: 'SENT'
+        },
+        data: { status: 'SKIPPED' }
+      });
+    }
 
     for (const item of expired) {
       if (item.telegramMessageId) {
