@@ -66,12 +66,14 @@ model ZoneEmployee {
 model CheckInRequest {
   id          String            @id @default(cuid())
   userId      String
+  scheduleId  String?           @unique
   requestedAt DateTime         @default(now())
   status      CheckInStatus     @default(PENDING)
   telegramMessageId Int?        // ID сообщения в Telegram для обновления после завершения чекинга
   expiresAt   DateTime?         // Дедлайн на сдачу отчета
   
   user        User              @relation(fields: [userId], references: [id])
+  schedule    CheckInSchedule?  @relation(fields: [scheduleId], references: [id])
   result      CheckInResult?
   
   @@map("check_in_requests")
@@ -102,6 +104,7 @@ model CheckInSchedule {
   createdAt   DateTime @default(now())
 
   user        User     @relation(fields: [userId], references: [id])
+  request     CheckInRequest?
 
   @@index([userId, scheduledAt])
   @@map("check_in_schedules")
