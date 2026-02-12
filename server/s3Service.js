@@ -16,6 +16,15 @@ const s3Client = new S3Client({
 const BUCKET_NAME = process.env.YC_S3_BUCKET;
 const PUBLIC_URL = process.env.YC_S3_PUBLIC_URL || `https://storage.yandexcloud.net/${BUCKET_NAME}`;
 
+/** Собирает читаемое сообщение из ошибки (в т.ч. AggregateError). */
+function formatS3Error(error) {
+  if (!error) return 'Unknown error';
+  if (error.errors && Array.isArray(error.errors)) {
+    return error.errors.map((e) => e.message || e.code || String(e)).join('; ');
+  }
+  return error.message || error.code || String(error);
+}
+
 /**
  * Загружает фото в Yandex Cloud S3
  * @param {Buffer|Readable} fileBuffer - Буфер файла или поток
@@ -49,7 +58,7 @@ export async function uploadPhoto(fileBuffer, fileName, contentType = 'image/jpe
     
     return photoUrl;
   } catch (error) {
-    console.error('❌ Ошибка загрузки фото в S3:', error);
+    console.error('❌ Ошибка загрузки фото в S3:', formatS3Error(error));
     throw error;
   }
 }
@@ -80,7 +89,7 @@ export async function getPhotoUrl(fileName, expiresIn = 3600) {
     const url = await getSignedUrl(s3Client, command, { expiresIn });
     return url;
   } catch (error) {
-    console.error('❌ Ошибка получения URL фото:', error);
+    console.error('❌ Ошибка получения URL фото:', formatS3Error(error));
     throw error;
   }
 }
@@ -103,7 +112,7 @@ export async function deletePhoto(fileName) {
     await s3Client.send(command);
     console.log(`✅ Фото удалено из S3: photos/${fileName}`);
   } catch (error) {
-    console.error('❌ Ошибка удаления фото из S3:', error);
+    console.error('❌ Ошибка удаления фото из S3:', formatS3Error(error));
     throw error;
   }
 }
@@ -126,7 +135,7 @@ export async function deletePhotoByKey(key) {
     await s3Client.send(command);
     console.log(`✅ Фото удалено из S3: ${key}`);
   } catch (error) {
-    console.error('❌ Ошибка удаления фото из S3:', error);
+    console.error('❌ Ошибка удаления фото из S3:', formatS3Error(error));
     throw error;
   }
 }
@@ -184,7 +193,7 @@ export async function cleanupPhotos({ olderThanDays, minSizeBytes } = {}) {
     console.log(`✅ Очистка фото завершена. Проверено: ${scanned}, удалено: ${deleted}`);
     return { scanned, deleted };
   } catch (error) {
-    console.error('❌ Ошибка очистки фото в S3:', error);
+    console.error('❌ Ошибка очистки фото в S3:', formatS3Error(error));
     throw error;
   }
 }
@@ -224,7 +233,7 @@ export async function testS3Connection() {
     console.log('✅ Подключение к Yandex Cloud S3 успешно');
     return true;
   } catch (error) {
-    console.error('❌ Ошибка подключения к S3:', error.message);
+    console.error('❌ Ошибка подключения к S3:', formatS3Error(error));
     return false;
   }
 }

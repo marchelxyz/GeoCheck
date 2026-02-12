@@ -2335,11 +2335,13 @@ app.post('/api/check-in/photo', verifyTelegramWebApp, upload.single('photo'), as
           ...fileMeta
         });
       } catch (error) {
+        const errMsg = error?.message || (error?.errors?.map((e) => e.message).join('; ')) || String(error);
         log('ERROR', 'CHECKIN', 'Error uploading photo to S3', {
           requestId: req.requestId,
           userId: user.id,
           checkInRequestId: pendingRequest.id,
-          error: error.message
+          error: errMsg,
+          code: error?.code
         });
         // Продолжаем с file_id если S3 не работает
       }
@@ -3308,6 +3310,16 @@ cron.schedule('* * * * *', async () => {
       : false;
 
     if (shouldTrigger) {
+      // Не отправлять запросы вне рабочего окна (например backlog после рестарта сервера ночью)
+      if (!isWithinWorkWindow(now, workDays, normalized.startMinutes, normalized.endMinutes)) {
+        if (scheduleItem) {
+          await prisma.checkInSchedule.update({
+            where: { id: scheduleItem.id },
+            data: { status: 'SKIPPED' }
+          });
+        }
+        continue;
+      }
       if (pendingUserIds.has(employee.id)) {
         const rescheduled = calculateNextCheckInAt(now, workDays, normalized.startMinutes, normalized.endMinutes);
         await prisma.user.update({
