@@ -3423,96 +3423,104 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// Daily schedule generation (defaults to 2:00 MSK)
-cron.schedule(DAILY_SCHEDULE_CRON, async () => {
-  try {
-    const now = getSchedulerNow();
-    const todayLocal = startOfLocalDay(now);
-    const todayUtcStart = toUtcDate(todayLocal);
-    const todayUtcEnd = toUtcDate(endOfLocalDay(now));
+/**
+ * Формирует расписание чекинов на один день (по локальной дате планировщика).
+ * Вызывается из CRON в 02:00 и при старте сервера (catch-up, если CRON был пропущен).
+ * @param {Date} now - текущее время в часовом поясе планировщика (getSchedulerNow())
+ */
+async function runDailyScheduleGeneration(now) {
+  const todayLocal = startOfLocalDay(now);
+  const todayUtcStart = toUtcDate(todayLocal);
+  const todayUtcEnd = toUtcDate(endOfLocalDay(now));
 
-    const employees = await prisma.user.findMany({
+  const employees = await prisma.user.findMany({
+    where: {
+      role: 'EMPLOYEE',
+      checkInsEnabled: true
+    },
+    select: {
+      id: true,
+      workDays: true,
+      workStartMinutes: true,
+      workEndMinutes: true,
+      dailyCheckInTarget: true,
+      dailyCheckInTargetPending: true,
+      dailyCheckInTargetPendingFrom: true
+    }
+  });
+
+  if (employees.length === 0) {
+    return;
+  }
+
+  for (const employee of employees) {
+    const pendingTarget = Number.isInteger(employee.dailyCheckInTargetPending)
+      ? employee.dailyCheckInTargetPending
+      : null;
+    const pendingFromLocal = employee.dailyCheckInTargetPendingFrom
+      ? toLocalDate(new Date(employee.dailyCheckInTargetPendingFrom))
+      : null;
+    const shouldApplyPending = pendingTarget !== null
+      && pendingFromLocal
+      && pendingFromLocal <= todayLocal;
+
+    if (shouldApplyPending) {
+      await prisma.user.update({
+        where: { id: employee.id },
+        data: {
+          dailyCheckInTarget: pendingTarget,
+          dailyCheckInTargetPending: null,
+          dailyCheckInTargetPendingFrom: null
+        }
+      });
+    }
+
+    const effectiveDailyTarget = shouldApplyPending
+      ? pendingTarget
+      : employee.dailyCheckInTarget;
+    const workDays = parseWorkDays(employee.workDays);
+    if (!isWorkingDay(todayLocal, workDays)) {
+      continue;
+    }
+
+    const existingCount = await prisma.checkInSchedule.count({
       where: {
-        role: 'EMPLOYEE',
-        checkInsEnabled: true
-      },
-      select: {
-        id: true,
-        workDays: true,
-        workStartMinutes: true,
-        workEndMinutes: true,
-        dailyCheckInTarget: true,
-        dailyCheckInTargetPending: true,
-        dailyCheckInTargetPendingFrom: true
+        userId: employee.id,
+        scheduledAt: {
+          gte: todayUtcStart,
+          lte: todayUtcEnd
+        }
       }
     });
 
-    if (employees.length === 0) {
-      return;
+    if (existingCount > 0) {
+      continue;
     }
 
-    for (const employee of employees) {
-      const pendingTarget = Number.isInteger(employee.dailyCheckInTargetPending)
-        ? employee.dailyCheckInTargetPending
-        : null;
-      const pendingFromLocal = employee.dailyCheckInTargetPendingFrom
-        ? toLocalDate(new Date(employee.dailyCheckInTargetPendingFrom))
-        : null;
-      const shouldApplyPending = pendingTarget !== null
-        && pendingFromLocal
-        && pendingFromLocal <= todayLocal;
+    const times = generateRandomScheduleTimes(
+      todayLocal,
+      effectiveDailyTarget ?? 8,
+      employee.workStartMinutes,
+      employee.workEndMinutes
+    );
 
-      if (shouldApplyPending) {
-        await prisma.user.update({
-          where: { id: employee.id },
-          data: {
-            dailyCheckInTarget: pendingTarget,
-            dailyCheckInTargetPending: null,
-            dailyCheckInTargetPendingFrom: null
-          }
-        });
-      }
-
-      const effectiveDailyTarget = shouldApplyPending
-        ? pendingTarget
-        : employee.dailyCheckInTarget;
-      const workDays = parseWorkDays(employee.workDays);
-      if (!isWorkingDay(todayLocal, workDays)) {
-        continue;
-      }
-
-      const existingCount = await prisma.checkInSchedule.count({
-        where: {
-          userId: employee.id,
-          scheduledAt: {
-            gte: todayUtcStart,
-            lte: todayUtcEnd
-          }
-        }
-      });
-
-      if (existingCount > 0) {
-        continue;
-      }
-
-      const times = generateRandomScheduleTimes(
-        todayLocal,
-        effectiveDailyTarget ?? 8,
-        employee.workStartMinutes,
-        employee.workEndMinutes
-      );
-
-      if (times.length === 0) {
-        continue;
-      }
-
-      await prisma.checkInSchedule.createMany({
-        data: times.map((time) => ({
-          userId: employee.id,
-          scheduledAt: toUtcDate(time)
-        }))
-      });
+    if (times.length === 0) {
+      continue;
     }
+
+    await prisma.checkInSchedule.createMany({
+      data: times.map((time) => ({
+        userId: employee.id,
+        scheduledAt: toUtcDate(time)
+      }))
+    });
+  }
+}
+
+// Daily schedule generation (defaults to 2:00 MSK)
+cron.schedule(DAILY_SCHEDULE_CRON, async () => {
+  try {
+    await runDailyScheduleGeneration(getSchedulerNow());
   } catch (error) {
     log('ERROR', 'CRON', 'Error generating daily schedules', {
       error: error.message
@@ -3702,6 +3710,14 @@ async function startBot() {
     log('WARN', 'STARTUP', 'Application will continue, but database operations may fail');
   } else {
     await ensureSchema();
+  }
+
+  try {
+    log('INFO', 'STARTUP', 'Ensuring daily check-in schedule for today (catch-up if CRON was missed)', {});
+    await runDailyScheduleGeneration(getSchedulerNow());
+    log('INFO', 'STARTUP', 'Daily schedule catch-up completed', {});
+  } catch (error) {
+    log('ERROR', 'STARTUP', 'Daily schedule catch-up failed', { error: error.message });
   }
 
   if (process.env.YC_S3_BUCKET) {
