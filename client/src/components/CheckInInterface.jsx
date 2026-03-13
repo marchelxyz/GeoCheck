@@ -16,8 +16,10 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
   const [geoPermissionDenied, setGeoPermissionDenied] = useState(() => {
     return localStorage.getItem('geoPermissionDenied') === '1';
   });
-  const geoTimeoutMs = 20000;
+  const geoTotalTimeoutMs = 30000;
   const geoAccuracyThreshold = 150;
+  const [geoStatus, setGeoStatus] = useState(null);
+  const [geoUnavailable, setGeoUnavailable] = useState(false);
 
   useEffect(() => {
     localStorage.removeItem('cameraPermissionDenied');
@@ -25,7 +27,8 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
 
   // Проверяем завершение чекинга и закрываем мини-приложение
   useEffect(() => {
-    if (locationSent && photoSent) {
+    const geoDone = locationSent || geoUnavailable;
+    if (geoDone && photoSent) {
       if (window.Telegram?.WebApp) {
         window.Telegram.WebApp.close();
       }
@@ -33,7 +36,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         onComplete();
       }
     }
-  }, [locationSent, photoSent, onComplete]);
+  }, [locationSent, geoUnavailable, photoSent, onComplete]);
 
   const handleClientEvent = (eventType, eventData = {}) => {
     void reportClientEvent({ eventType, eventData, requestId });
@@ -114,6 +117,10 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
     setLoading(true);
     setLocationError(null);
     setLocationAccuracy(null);
+    setGeoStatus(null);
+    setGeoUnavailable(false);
+
+    const startTime = Date.now();
 
     try {
       const locationSources = [];
@@ -127,24 +134,49 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
       let position = null;
       let locationSource = null;
       let lastError = null;
+      let totalTimedOut = false;
+
+      const totalTimeoutPromise = new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error('GeoTotalTimeout')),
+          geoTotalTimeoutMs
+        );
+      });
 
       for (const source of locationSources) {
+        const elapsed = Date.now() - startTime;
+        const remainingMs = Math.max(5000, geoTotalTimeoutMs - elapsed);
+        const sourceTimeoutMs = Math.min(
+          remainingMs - 500,
+          source === 'telegram' ? 12000 : 25000
+        );
+
+        setGeoStatus(source === 'telegram' ? 'telegram' : 'browser');
+
         handleClientEvent('geo_request', {
           source,
           highAccuracy: true,
-          timeoutMs: geoTimeoutMs,
+          timeoutMs: sourceTimeoutMs,
           accuracyThreshold: geoAccuracyThreshold
         });
+
         try {
-          position = await getLocationFromSource(source, {
-            timeoutMs: geoTimeoutMs,
-            accuracyThreshold: geoAccuracyThreshold,
-            highAccuracy: true,
-            maxAgeMs: 0
-          });
+          position = await Promise.race([
+            getLocationFromSource(source, {
+              timeoutMs: sourceTimeoutMs,
+              accuracyThreshold: geoAccuracyThreshold,
+              highAccuracy: true,
+              maxAgeMs: 0
+            }),
+            totalTimeoutPromise
+          ]);
           locationSource = source;
           break;
         } catch (error) {
+          if (error?.message === 'GeoTotalTimeout') {
+            totalTimedOut = true;
+            break;
+          }
           lastError = error;
           lastError.source = source;
           handleClientEvent('geo_error', {
@@ -156,17 +188,30 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
             localStorage.setItem('geoPermissionDenied', '1');
             setGeoPermissionDenied(true);
           }
+          if (Date.now() - startTime >= geoTotalTimeoutMs) {
+            totalTimedOut = true;
+            break;
+          }
         }
       }
 
       if (!position) {
-        if (lastError?.source === 'browser' && lastError?.code === lastError.PERMISSION_DENIED) {
+        if (totalTimedOut || Date.now() - startTime >= geoTotalTimeoutMs) {
+          setGeoStatus('failed');
+          setGeoUnavailable(true);
+          setLocationError('Геолокацию определить не удалось. Вы можете отправить только фото.');
+        } else if (
+          lastError?.source === 'browser' &&
+          lastError?.code === lastError.PERMISSION_DENIED
+        ) {
           setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
         } else {
           setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
         }
         return;
       }
+
+      setGeoStatus('success');
 
       const initData = getTelegramInitData();
       const response = await axios.post(
@@ -203,9 +248,12 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         console.warn('Telegram showAlert failed:', alertErr);
       }
     } catch (error) {
-      setLocationError(error?.response?.data?.error || 'Не удалось отправить геолокацию. Попробуйте еще раз.');
+      setLocationError(
+        error?.response?.data?.error || 'Не удалось отправить геолокацию. Попробуйте еще раз.'
+      );
     } finally {
       setLoading(false);
+      setGeoStatus(null);
     }
   };
 
@@ -256,10 +304,29 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
               <span className="font-medium text-gray-700">📍 Геолокация</span>
               {locationSent ? (
                 <span className="text-green-600 font-semibold">✓ Отправлено</span>
+              ) : geoUnavailable ? (
+                <span className="text-amber-600 font-medium">Пропущено</span>
               ) : (
                 <span className="text-gray-400">Не отправлено</span>
               )}
             </div>
+            {geoStatus === 'telegram' && (
+              <p className="text-sm text-blue-600 mt-1 flex items-center gap-2">
+                <span className="inline-block h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                Определяем геолокацию через Telegram...
+              </p>
+            )}
+            {geoStatus === 'browser' && (
+              <p className="text-sm text-blue-600 mt-1 flex items-center gap-2">
+                <span className="inline-block h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                Определяем через браузер...
+              </p>
+            )}
+            {geoUnavailable && !locationSent && (
+              <p className="text-sm text-amber-700 mt-1">
+                Геолокацию определить не удалось. Вы можете отправить только фото.
+              </p>
+            )}
             {isWithinZone !== null && (
               <div className="mt-2 text-sm">
                 {isWithinZone ? (
@@ -276,15 +343,17 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
                 Точность геолокации: ~{locationAccuracy} м
               </div>
             )}
-            {locationError && (
+            {locationError && !geoUnavailable && (
               <p className="text-sm text-red-600 mt-1">{locationError}</p>
             )}
           </div>
 
           {/* Статус отправки фото */}
           <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-            {locationSent && !photoSent && (
-              <p className="text-sm text-blue-600 mb-2">Теперь отправьте фото</p>
+            {(locationSent || geoUnavailable) && !photoSent && (
+              <p className="text-sm text-blue-600 mb-2">
+                {geoUnavailable ? 'Отправьте фото' : 'Теперь отправьте фото'}
+              </p>
             )}
             <div className="flex items-center justify-between mb-2">
               <span className="font-medium text-gray-700">📷 Фото</span>
@@ -303,19 +372,30 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
           <div className="space-y-3">
             <button
               onClick={handleSendLocation}
-              disabled={locationSent || loading || uploadingPhoto}
+              disabled={locationSent || geoUnavailable || loading || uploadingPhoto}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              <span>{locationSent ? 'Геолокация отправлена' : 'Отправить геолокацию'}</span>
+              <span>
+                {locationSent
+                  ? 'Геолокация отправлена'
+                  : geoUnavailable
+                    ? 'Геолокация недоступна'
+                    : 'Отправить геолокацию'}
+              </span>
             </button>
 
             <button
               onClick={handleSendPhoto}
-              disabled={photoSent || loading || cameraActive || uploadingPhoto}
+              disabled={
+                photoSent ||
+                (loading && !geoUnavailable) ||
+                cameraActive ||
+                uploadingPhoto
+              }
               className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-4 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -326,7 +406,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
             </button>
           </div>
 
-          {locationSent && photoSent && (
+          {(locationSent || geoUnavailable) && photoSent && (
             <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
               <p className="text-sm text-green-800 text-center">
                 ✅ Проверка завершена! Приложение закроется автоматически.
