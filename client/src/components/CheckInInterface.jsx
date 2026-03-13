@@ -192,14 +192,15 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
       });
 
-      if (response.data.isWithinZone) {
+      try {
         if (window.Telegram?.WebApp) {
-          window.Telegram.WebApp.showAlert('✅ Вы в рабочей зоне!');
+          const msg = response.data.isWithinZone
+            ? '✅ Вы в рабочей зоне!'
+            : `❌ Вы вне рабочей зоны. Расстояние: ${Math.round(response.data.distanceToZone || 0)}м`;
+          window.Telegram.WebApp.showAlert(msg);
         }
-      } else {
-        if (window.Telegram?.WebApp) {
-          window.Telegram.WebApp.showAlert(`❌ Вы вне рабочей зоны. Расстояние: ${Math.round(response.data.distanceToZone || 0)}м`);
-        }
+      } catch (alertErr) {
+        console.warn('Telegram showAlert failed:', alertErr);
       }
     } catch (error) {
       setLocationError(error?.response?.data?.error || 'Не удалось отправить геолокацию. Попробуйте еще раз.');
@@ -282,6 +283,9 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
 
           {/* Статус отправки фото */}
           <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+            {locationSent && !photoSent && (
+              <p className="text-sm text-blue-600 mb-2">Теперь отправьте фото</p>
+            )}
             <div className="flex items-center justify-between mb-2">
               <span className="font-medium text-gray-700">📷 Фото</span>
               {photoSent ? (
