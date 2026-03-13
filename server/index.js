@@ -2776,9 +2776,16 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       });
     }
 
-    const deadlineMinutes = Number.isInteger(director.reportDeadlineMinutes)
-      ? director.reportDeadlineMinutes
-      : 5;
+    const allDirectors = await prisma.user.findMany({
+      where: { role: 'DIRECTOR' },
+      select: { reportDeadlineMinutes: true }
+    });
+    const directorDeadlines = allDirectors
+      .map((d) => (Number.isInteger(d.reportDeadlineMinutes) ? d.reportDeadlineMinutes : 5))
+      .filter((m) => m >= 1 && m <= 120);
+    const deadlineMinutes =
+      directorDeadlines.length > 0 ? Math.max(...directorDeadlines) : 5;
+
     const checkInRequest = await prisma.checkInRequest.create({
       data: {
         userId: employee.id,
@@ -3261,12 +3268,15 @@ cron.schedule('* * * * *', async () => {
   const pendingUserIds = new Set(pendingRequests.map((request) => request.userId));
 
   const directors = await prisma.user.findMany({
-    where: { role: 'DIRECTOR' }
+    where: { role: 'DIRECTOR' },
+    select: { reportDeadlineMinutes: true }
   });
 
-  const defaultDeadlineMinutes = Number.isInteger(directors[0]?.reportDeadlineMinutes)
-    ? directors[0].reportDeadlineMinutes
-    : 5;
+  const directorDeadlines = directors
+    .map((d) => (Number.isInteger(d.reportDeadlineMinutes) ? d.reportDeadlineMinutes : 5))
+    .filter((m) => m >= 1 && m <= 120);
+  const defaultDeadlineMinutes =
+    directorDeadlines.length > 0 ? Math.max(...directorDeadlines) : 5;
 
   const nowUtc = toUtcDate(now);
   for (const employee of employees) {
