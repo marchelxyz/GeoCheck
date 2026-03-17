@@ -21,9 +21,9 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [requestId, setRequestId] = useState(null);
+  const [pendingCheckDone, setPendingCheckDone] = useState(false);
 
   useEffect(() => {
-    // Проверяем URL параметры
     const params = new URLSearchParams(window.location.search);
     const reqId = params.get('requestId');
     if (reqId) {
@@ -87,6 +87,37 @@ function App() {
       document.body.style.zoom = '';
     };
   }, []);
+
+  useEffect(() => {
+    if (loading || requestId || role !== 'EMPLOYEE' || !user || pendingCheckDone) {
+      return;
+    }
+    checkPendingCheckIn();
+  }, [loading, requestId, role, user, pendingCheckDone]);
+
+  /**
+   * Проверяет наличие активного pending check-in для сотрудника
+   * и устанавливает requestId, если таковой найден.
+   */
+  async function checkPendingCheckIn() {
+    const initData = getTelegramInitData();
+    if (!initData) {
+      setPendingCheckDone(true);
+      return;
+    }
+    try {
+      const response = await axios.get('/api/check-in/pending', {
+        headers: { 'x-telegram-init-data': initData }
+      });
+      if (response.data?.id) {
+        setRequestId(response.data.id);
+      }
+    } catch {
+      // 404 = нет pending запросов — нормальная ситуация
+    } finally {
+      setPendingCheckDone(true);
+    }
+  }
 
   const getTelegramInitData = () => {
     if (!window.Telegram?.WebApp) {
@@ -284,6 +315,10 @@ function App() {
         </div>
       </div>
     );
+  }
+
+  if (role === 'EMPLOYEE' && !pendingCheckDone) {
+    return <Loading />;
   }
 
   if (role === 'EMPLOYEE' && isDesktopPlatform()) {
