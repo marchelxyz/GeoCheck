@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import DirectorView from './components/DirectorView';
 import EmployeeView from './components/EmployeeView';
 import CheckInInterface from './components/CheckInInterface';
 import Loading from './components/Loading';
+
+axios.defaults.timeout = 15000;
 
 const isDesktopPlatform = () => {
   const platform = window.Telegram?.WebApp?.platform;
@@ -14,6 +16,27 @@ const isDesktopPlatform = () => {
   const ua = navigator.userAgent.toLowerCase();
   return /windows|macintosh|linux/.test(ua) && !/android|iphone|ipad|mobile/.test(ua);
 };
+
+/**
+ * Выполняет async-функцию с retry при сетевых/таймаут ошибках.
+ * Не повторяет при HTTP-ответах (4xx/5xx) — только при полном отсутствии связи.
+ */
+async function withRetry(fn, { retries = 2, delayMs = 1000 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const isNetworkError = !error.response && (error.code === 'ECONNABORTED' || error.message === 'Network Error' || error.code === 'ERR_NETWORK');
+      if (!isNetworkError || attempt === retries) {
+        throw error;
+      }
+      await new Promise(r => setTimeout(r, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
 
 function App() {
   const [user, setUser] = useState(null);
@@ -98,6 +121,7 @@ function App() {
   /**
    * Проверяет наличие активного pending check-in для сотрудника
    * и устанавливает requestId, если таковой найден.
+   * Повторяет запрос при сетевых ошибках (прокси/таймаут).
    */
   async function checkPendingCheckIn() {
     const initData = getTelegramInitData();
@@ -106,14 +130,19 @@ function App() {
       return;
     }
     try {
-      const response = await axios.get('/api/check-in/pending', {
-        headers: { 'x-telegram-init-data': initData }
-      });
-      if (response.data?.id) {
-        setRequestId(response.data.id);
+      const response = await withRetry(() =>
+        axios.get('/api/check-in/pending', {
+          headers: { 'x-telegram-init-data': initData }
+        })
+      );
+      const id = response.data?.id;
+      if (id && typeof id === 'string' && id.length > 0) {
+        setRequestId(id);
       }
-    } catch {
-      // 404 = нет pending запросов — нормальная ситуация
+    } catch (error) {
+      if (error.response?.status !== 404) {
+        console.warn('checkPendingCheckIn failed:', error.message);
+      }
     } finally {
       setPendingCheckDone(true);
     }
@@ -142,10 +171,11 @@ function App() {
     return null;
   };
 
-  const initTelegramWebApp = async () => {
-    // Ждем загрузки Telegram Web App SDK
+  const initTelegramWebApp = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
     if (!window.Telegram) {
-      // Пробуем подождать немного
       await new Promise(resolve => setTimeout(resolve, 500));
       
       if (!window.Telegram?.WebApp) {
@@ -171,11 +201,11 @@ function App() {
       }
       
       try {
-        const userResponse = await axios.post('/api/user', {}, {
-          headers: {
-            'x-telegram-init-data': initData
-          }
-        });
+        const userResponse = await withRetry(() =>
+          axios.post('/api/user', {}, {
+            headers: { 'x-telegram-init-data': initData }
+          })
+        );
         
         setUser(userResponse.data);
         setRole(userResponse.data.role);
@@ -185,7 +215,7 @@ function App() {
           setRole(null);
         } else {
           console.error('Error initializing user:', error);
-          setError(error.response?.data?.error || 'Ошибка инициализации пользователя');
+          setError(error.response?.data?.error || 'Ошибка соединения. Проверьте интернет-подключение и попробуйте снова.');
         }
       } finally {
         setLoading(false);
@@ -196,7 +226,7 @@ function App() {
       setRole('DIRECTOR');
       setLoading(false);
     }
-  };
+  }, []);
 
   const handleRegister = async () => {
     if (!window.Telegram?.WebApp) {
@@ -275,6 +305,30 @@ function App() {
     return <Loading />;
   }
 
+  if (!user && error) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-4">
+            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          </div>
+          <h1 className="text-xl font-bold text-gray-800 mb-2">Ошибка подключения</h1>
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+            <p className="text-sm text-red-600">{error}</p>
+          </div>
+          <button
+            onClick={initTelegramWebApp}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors"
+          >
+            Попробовать снова
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -288,12 +342,6 @@ function App() {
             <h1 className="text-2xl font-bold text-gray-800 mb-2">Добро пожаловать в GeoCheck!</h1>
             <p className="text-gray-600">Для начала работы необходимо зарегистрироваться</p>
           </div>
-          
-          {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-600">{error}</p>
-            </div>
-          )}
           
           <button
             onClick={handleRegister}
@@ -309,7 +357,7 @@ function App() {
           
           {!window.Telegram?.WebApp && (
             <p className="text-xs text-red-500 text-center mt-2">
-              ⚠️ Приложение должно быть открыто через Telegram бота
+              Приложение должно быть открыто через Telegram бота
             </p>
           )}
         </div>

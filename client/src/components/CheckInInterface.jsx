@@ -70,7 +70,8 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
           headers: {
             'x-telegram-init-data': initData,
             'Content-Type': 'multipart/form-data'
-          }
+          },
+          timeout: 60000
         }
       );
 
@@ -86,7 +87,12 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         status: error?.response?.status,
         message: error?.message
       });
-      setPhotoError(error.response?.data?.error || 'Ошибка отправки фото');
+      const isNetwork = !error.response && (error.code === 'ECONNABORTED' || error.message === 'Network Error' || error.code === 'ERR_NETWORK');
+      setPhotoError(
+        isNetwork
+          ? 'Ошибка сети. Проверьте подключение и попробуйте снова.'
+          : (error.response?.data?.error || 'Ошибка отправки фото')
+      );
       return false;
     } finally {
       setUploadingPhoto(false);
@@ -222,7 +228,8 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
           accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
         },
         {
-          headers: { 'x-telegram-init-data': initData }
+          headers: { 'x-telegram-init-data': initData },
+          timeout: 15000
         }
       );
 
@@ -248,8 +255,11 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         console.warn('Telegram showAlert failed:', alertErr);
       }
     } catch (error) {
+      const isNetwork = !error.response && (error.code === 'ECONNABORTED' || error.message === 'Network Error' || error.code === 'ERR_NETWORK');
       setLocationError(
-        error?.response?.data?.error || 'Не удалось отправить геолокацию. Попробуйте еще раз.'
+        isNetwork
+          ? 'Ошибка сети. Проверьте подключение и попробуйте снова.'
+          : (error?.response?.data?.error || 'Не удалось отправить геолокацию. Попробуйте еще раз.')
       );
     } finally {
       setLoading(false);
@@ -444,7 +454,8 @@ async function reportClientEvent({ eventType, eventData, requestId }) {
     await axios.post('/api/check-in/client-event', payload, {
       headers: {
         'x-telegram-init-data': getTelegramInitData()
-      }
+      },
+      timeout: 5000
     });
   } catch (error) {
     console.warn('Client event log failed:', error);
