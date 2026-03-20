@@ -786,25 +786,27 @@ function _calculateLivePeriod(employee) {
   return Math.min(remainingMinutes * 60, 28800);
 }
 
+const TRACKING_BUTTON_TEXT = '📡 Начать трансляцию';
+
 /**
- * Sends a ReplyKeyboard with request_location button so the employee can share
- * Telegram's native Live Location. No session is created here — the session
- * starts when the bot receives a location message with live_period.
+ * Sends a ReplyKeyboard with a text button that triggers live location instructions.
+ * No session is created here — the session starts when the bot receives
+ * a location message with live_period via the native Telegram Live Location.
  */
 async function _requestLiveLocation(employee, source) {
   const livePeriod = _calculateLivePeriod(employee);
   const hours = Math.round(livePeriod / 3600);
 
   const messageText = source === 'director_request'
-    ? `📡 Директор запросил трансляцию геолокации!\n\nНажмите кнопку ниже и выберите «Транслировать геолокацию» на ~${hours} ч.`
-    : `📡 Рабочий день начался!\n\nНажмите кнопку ниже и выберите «Транслировать геолокацию» на ~${hours} ч.`;
+    ? `📡 Директор запросил трансляцию геолокации на ~${hours} ч!\n\nНажмите кнопку ниже для инструкции.`
+    : `📡 Рабочий день начался! Необходима трансляция геолокации на ~${hours} ч.\n\nНажмите кнопку ниже для инструкции.`;
 
   try {
     await bot.telegram.sendMessage(
       employee.telegramId,
       messageText,
       Markup.keyboard([
-        [Markup.button.locationRequest('📍 Поделиться геолокацией')]
+        [TRACKING_BUTTON_TEXT]
       ]).oneTime().resize()
     );
 
@@ -3442,6 +3444,20 @@ bot.command('admin', async (ctx) => {
   await ctx.reply('✅ Вы получили права директора!');
 });
 
+// Handle tracking button press — show step-by-step live location instructions
+bot.hears(TRACKING_BUTTON_TEXT, async (ctx) => {
+  await ctx.reply(
+    '📍 Как начать трансляцию геолокации:\n\n' +
+    '1. Нажмите 📎 (скрепка) внизу чата\n' +
+    '2. Выберите «Геолокация»\n' +
+    '3. Нажмите «Транслировать геолокацию»\n' +
+    '4. Выберите длительность (8 часов)\n' +
+    '5. Нажмите «Отправить»\n\n' +
+    'После этого телефон можно убрать — трекинг будет идти в фоне.',
+    Markup.removeKeyboard()
+  );
+});
+
 // Handle location (check-in fallback + live location start)
 bot.on('location', async (ctx) => {
   const telegramId = String(ctx.from.id);
@@ -3548,8 +3564,8 @@ async function _handleOneTimeLocation(ctx, user, location) {
 
   if (!pendingRequest) {
     return ctx.reply(
-      '📍 Вы отправили одноразовую геолокацию.\n\n' +
-      'Если вы хотели начать трансляцию — нажмите 📎 → Геолокация → «Транслировать геолокацию» и выберите длительность.'
+      '⚠️ Это одноразовая геолокация — для трекинга нужна потоковая.\n\n' +
+      'Нажмите 📎 → Геолокация → «Транслировать геолокацию» → выберите 8 ч → Отправить.'
     );
   }
 
