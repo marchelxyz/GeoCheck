@@ -3,6 +3,8 @@ import axios from 'axios';
 import ZoneMap from './ZoneMap';
 import ZoneList from './ZoneList';
 import CheckInDashboard from './CheckInDashboard';
+import LiveTrackingMap from './LiveTrackingMap';
+import TrackingHistory from './TrackingHistory';
 
 export default function DirectorView() {
   const [activeTab, setActiveTab] = useState('map');
@@ -464,6 +466,16 @@ export default function DirectorView() {
               🗺️ Карта зон
             </button>
             <button
+              onClick={() => setActiveTab('tracking')}
+              className={`px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === 'tracking'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
+            >
+              📡 Трекинг
+            </button>
+            <button
               onClick={() => setActiveTab('zones')}
               className={`px-4 py-3 text-sm font-medium transition-colors ${
                 activeTab === 'zones'
@@ -525,6 +537,9 @@ export default function DirectorView() {
             onZoneCreated={handleZoneCreated}
             onZoneDeleted={handleZoneDeleted}
           />
+        )}
+        {activeTab === 'tracking' && (
+          <LiveTrackingMap zones={zones} />
         )}
         {activeTab === 'zones' && (
           <ZoneList
@@ -635,6 +650,13 @@ export default function DirectorView() {
                             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
                           >
                             Отправить проверку
+                          </button>
+                          <button
+                            onClick={() => setActiveTab(`history-${employee.id}`)}
+                            className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors"
+                            title="История маршрутов сотрудника"
+                          >
+                            📍 Маршруты
                           </button>
                           <button
                             onClick={() => handleDeleteEmployee(employee.id)}
@@ -908,6 +930,25 @@ export default function DirectorView() {
             </p>
           </div>
         )}
+        {activeTab.startsWith('history-') && (() => {
+          const employeeId = activeTab.replace('history-', '');
+          const employee = employees.find((e) => e.id === employeeId);
+          return (
+            <div>
+              <button
+                onClick={() => setActiveTab('employees')}
+                className="mb-4 text-sm text-blue-600 hover:text-blue-800"
+              >
+                ← Назад к сотрудникам
+              </button>
+              <TrackingHistory
+                employeeId={employeeId}
+                employeeName={employee?.displayName || employee?.name || 'Сотрудник'}
+                zones={zones}
+              />
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
