@@ -648,7 +648,9 @@ async function checkLocationInZones(lat, lon, userId) {
 
 // ─── Live Location Tracking helpers ──────────────────────────────────────────
 
-const TRACKING_TIMEOUT_MINUTES = 5;
+// Native Live Location обновляется редко при неподвижном телефоне (5–15+ мин).
+// Слишком малый таймаут приводит к ложному «прекращению» активной сессии.
+const TRACKING_TIMEOUT_MINUTES = Number(process.env.TRACKING_TIMEOUT_MINUTES) || 20;
 
 /**
  * Processes a live location update: saves point, checks zone, triggers photo check-in if needed.
