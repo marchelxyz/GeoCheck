@@ -3,7 +3,6 @@ import axios from 'axios';
 import DirectorView from './components/DirectorView';
 import EmployeeView from './components/EmployeeView';
 import CheckInInterface from './components/CheckInInterface';
-import TrackingInterface from './components/TrackingInterface';
 import Loading from './components/Loading';
 
 axios.defaults.timeout = 15000;
@@ -45,7 +44,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [requestId, setRequestId] = useState(null);
-  const [trackingSessionId, setTrackingSessionId] = useState(null);
   const [pendingCheckDone, setPendingCheckDone] = useState(false);
 
   useEffect(() => {
@@ -53,10 +51,6 @@ function App() {
     const reqId = params.get('requestId');
     if (reqId) {
       setRequestId(reqId);
-    }
-    const sessId = params.get('sessionId');
-    if (sessId && window.location.pathname === '/tracking') {
-      setTrackingSessionId(sessId);
     }
     
     initTelegramWebApp();
@@ -270,27 +264,6 @@ function App() {
       alert(errorMessage);
     }
   };
-
-  if (trackingSessionId && isDesktopPlatform()) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center">
-          <div className="text-4xl mb-4">📵</div>
-          <h1 className="text-xl font-bold text-gray-800 mb-2">Трекинг доступен только на мобильном</h1>
-          <p className="text-gray-600">
-            Откройте трансляцию геолокации через мобильное приложение Telegram.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (trackingSessionId) {
-    if (loading) {
-      return <Loading />;
-    }
-    return <TrackingInterface sessionId={trackingSessionId} />;
-  }
 
   // Если есть requestId в URL, показываем интерфейс проверки
   if (requestId && isDesktopPlatform()) {

@@ -787,54 +787,37 @@ function _calculateLivePeriod(employee) {
 }
 
 /**
- * Creates a TrackingSession and sends a Telegram message with a WebApp button.
- * Returns the created session.
+ * Sends a ReplyKeyboard with request_location button so the employee can share
+ * Telegram's native Live Location. No session is created here — the session
+ * starts when the bot receives a location message with live_period.
  */
-async function _createTrackingSessionWithButton(employee, source) {
+async function _requestLiveLocation(employee, source) {
   const livePeriod = _calculateLivePeriod(employee);
   const hours = Math.round(livePeriod / 3600);
 
-  const session = await prisma.trackingSession.create({
-    data: {
-      userId: employee.id,
-      livePeriod,
-      lastUpdateAt: new Date()
-    }
-  });
-
-  const trackingUrl = `${WEB_APP_URL}/tracking?sessionId=${session.id}`;
   const messageText = source === 'director_request'
-    ? `📡 Директор запросил трансляцию геолокации!\n\nВаши перемещения будут отслеживаться ~${hours} ч.\nНажмите кнопку ниже, чтобы начать.`
-    : `📡 Рабочий день начался!\n\nВаши перемещения будут отслеживаться ~${hours} ч.\nНажмите кнопку ниже, чтобы начать.`;
+    ? `📡 Директор запросил трансляцию геолокации!\n\nНажмите кнопку ниже и выберите «Транслировать геолокацию» на ~${hours} ч.`
+    : `📡 Рабочий день начался!\n\nНажмите кнопку ниже и выберите «Транслировать геолокацию» на ~${hours} ч.`;
 
   try {
-    const sentMessage = await bot.telegram.sendMessage(
+    await bot.telegram.sendMessage(
       employee.telegramId,
       messageText,
-      Markup.inlineKeyboard([
-        [Markup.button.webApp('📡 Начать трансляцию', trackingUrl)]
-      ])
+      Markup.keyboard([
+        [Markup.button.locationRequest('📍 Поделиться геолокацией')]
+      ]).oneTime().resize()
     );
 
-    await prisma.trackingSession.update({
-      where: { id: session.id },
-      data: { telegramMessageId: sentMessage.message_id }
-    });
-
-    io.to('directors').emit('tracking:sessionStarted', {
-      sessionId: session.id,
+    log('INFO', 'TRACKING', 'Live location request sent via ReplyKeyboard', {
       employeeId: employee.id,
-      employeeName: employee.displayName || employee.name,
-      livePeriod
+      source
     });
   } catch (error) {
-    log('ERROR', 'TRACKING', 'Failed to send tracking button message', {
+    log('ERROR', 'TRACKING', 'Failed to send live location request', {
       employeeId: employee.id,
       error: error.message
     });
   }
-
-  return session;
 }
 
 // ─── End Live Location Tracking helpers ──────────────────────────────────────
@@ -3175,75 +3158,16 @@ app.post('/api/tracking/request/:employeeId', async (req, res) => {
       return res.status(400).json({ error: 'Tracking session already active', sessionId: existingSession.id });
     }
 
-    const session = await _createTrackingSessionWithButton(employee, 'director_request');
+    await _requestLiveLocation(employee, 'director_request');
 
     const label = employee.displayName || employee.name || 'Сотрудник';
     log('INFO', 'TRACKING', 'Manual tracking request sent', {
-      employeeId, employeeName: label, sessionId: session.id
+      employeeId, employeeName: label
     });
-    res.json({ success: true, sessionId: session.id, message: `Запрос на трекинг отправлен сотруднику ${label}` });
+    res.json({ success: true, message: `Запрос на трекинг отправлен сотруднику ${label}` });
   } catch (error) {
     log('ERROR', 'TRACKING', 'Error requesting tracking', { error: error.message });
     res.status(500).json({ error: 'Failed to request tracking' });
-  }
-});
-
-// Mini App submits location updates for an active tracking session
-app.post('/api/tracking/location', verifyTelegramWebApp, async (req, res) => {
-  try {
-    const { id: telegramId } = req.telegramUser;
-    const { sessionId, latitude, longitude, accuracy } = req.body;
-
-    if (!sessionId || latitude == null || longitude == null) {
-      return res.status(400).json({ error: 'sessionId, latitude, longitude are required' });
-    }
-
-    const user = await prisma.user.findUnique({ where: { telegramId: String(telegramId) } });
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const session = await prisma.trackingSession.findUnique({ where: { id: sessionId } });
-    if (!session || session.userId !== user.id) {
-      return res.status(403).json({ error: 'Session not found or access denied' });
-    }
-    if (session.status !== 'ACTIVE') {
-      return res.status(410).json({ error: 'Session is no longer active', status: session.status });
-    }
-
-    const point = await processLiveLocationUpdate(
-      session, latitude, longitude, accuracy ?? null, null, null
-    );
-    emitTrackingUpdate(session, point, user);
-
-    res.json({
-      success: true,
-      isWithinZone: point.isWithinZone,
-      distanceToZone: point.distanceToZone
-    });
-  } catch (error) {
-    log('ERROR', 'TRACKING', 'Error processing tracking location from Mini App', { error: error.message });
-    res.status(500).json({ error: 'Failed to process location' });
-  }
-});
-
-// Get tracking session status (for Mini App to detect if session was stopped)
-app.get('/api/tracking/session/:sessionId/status', verifyTelegramWebApp, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const session = await prisma.trackingSession.findUnique({
-      where: { id: sessionId },
-      select: { id: true, status: true, startedAt: true, endedAt: true, zoneExitNotified: true }
-    });
-
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-
-    res.json(session);
-  } catch (error) {
-    log('ERROR', 'TRACKING', 'Error fetching session status', { error: error.message });
-    res.status(500).json({ error: 'Failed to fetch session status' });
   }
 });
 
@@ -3588,7 +3512,10 @@ async function _handleLiveLocationStart(ctx, user, location) {
     livePeriod: location.live_period
   });
 
-  await ctx.reply('📡 Трансляция геолокации начата! Ваши перемещения отслеживаются.');
+  await ctx.reply(
+    '📡 Трансляция геолокации начата! Ваши перемещения отслеживаются.\nТелефон можно убрать — трекинг идёт в фоне.',
+    Markup.removeKeyboard()
+  );
 
   const directors = await prisma.user.findMany({
     where: { role: 'DIRECTOR' },
@@ -3620,7 +3547,10 @@ async function _handleOneTimeLocation(ctx, user, location) {
   });
 
   if (!pendingRequest) {
-    return ctx.reply('Нет активных запросов на проверку');
+    return ctx.reply(
+      '📍 Вы отправили одноразовую геолокацию.\n\n' +
+      'Если вы хотели начать трансляцию — нажмите 📎 → Геолокация → «Транслировать геолокацию» и выберите длительность.'
+    );
   }
 
   if (pendingRequest.expiresAt && new Date() > pendingRequest.expiresAt) {
@@ -4315,8 +4245,8 @@ cron.schedule('* * * * *', async () => {
       const label = employee.displayName || employee.name || 'Сотрудник';
 
       try {
-        await _createTrackingSessionWithButton(employee, 'work_start');
-        log('INFO', 'TRACKING', 'Auto tracking request sent via WebApp button', {
+        await _requestLiveLocation(employee, 'work_start');
+        log('INFO', 'TRACKING', 'Auto tracking request sent via ReplyKeyboard', {
           employeeId: employee.id,
           employeeName: label
         });
