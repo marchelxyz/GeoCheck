@@ -31,6 +31,7 @@ model User {
   createdZones  Zone[]           @relation("ZoneCreator")
   checkInRequests CheckInRequest[]
   schedules    CheckInSchedule[]
+  trackingSessions TrackingSession[]
   
   @@map("users")
 }
@@ -133,4 +134,46 @@ enum CheckInScheduleStatus {
   PENDING
   SENT
   SKIPPED
+}
+
+model TrackingSession {
+  id                String         @id @default(cuid())
+  userId            String
+  startedAt         DateTime       @default(now())
+  endedAt           DateTime?
+  status            TrackingStatus @default(ACTIVE)
+  livePeriod        Int?           // Длительность шаринга в секундах (от Telegram)
+  telegramMessageId Int?           // ID сообщения с live location в Telegram
+  lastUpdateAt      DateTime?      // Время последнего обновления координат
+  zoneExitNotified  Boolean        @default(false) // Фото-чекин уже запрошен при выходе из зоны
+
+  user   User            @relation(fields: [userId], references: [id])
+  points LocationPoint[]
+
+  @@index([userId, status])
+  @@map("tracking_sessions")
+}
+
+model LocationPoint {
+  id           String   @id @default(cuid())
+  sessionId    String
+  latitude     Float
+  longitude    Float
+  accuracy     Float?
+  heading      Float?
+  speed        Float?
+  isWithinZone Boolean?
+  timestamp    DateTime @default(now())
+
+  session TrackingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, timestamp])
+  @@map("location_points")
+}
+
+enum TrackingStatus {
+  ACTIVE
+  STOPPED
+  EXPIRED
+  COMPLETED
 }

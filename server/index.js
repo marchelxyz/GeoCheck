@@ -1,4 +1,6 @@
 import express from 'express';
+import { createServer } from 'http';
+import { Server as SocketServer } from 'socket.io';
 import { Telegraf, Markup } from 'telegraf';
 import cron from 'node-cron';
 import cors from 'cors';
@@ -18,6 +20,11 @@ const __dirname = dirname(__filename);
 dotenv.config();
 
 const app = express();
+const httpServer = createServer(app);
+const io = new SocketServer(httpServer, {
+  cors: { origin: '*' },
+  path: '/socket.io'
+});
 const prisma = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
 });
@@ -366,6 +373,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const ADMIN_GEO_TG = (process.env.ADMIN_GEO_TG || process.env.ADMIN_TELEGRAM_ID || process.env.ADMIN_TG || '').trim();
 const PORT = process.env.PORT || 3000;
+const WEB_APP_URL = process.env.WEB_APP_URL || `http://localhost:${PORT}`;
 
 if (!BOT_TOKEN) {
   log('ERROR', 'STARTUP', 'BOT_TOKEN is required!');
@@ -637,6 +645,199 @@ async function checkLocationInZones(lat, lon, userId) {
     zoneId: closest.zone?.id || null
   };
 }
+
+// ─── Live Location Tracking helpers ──────────────────────────────────────────
+
+const TRACKING_TIMEOUT_MINUTES = 5;
+
+/**
+ * Processes a live location update: saves point, checks zone, triggers photo check-in if needed.
+ * Returns the saved point enriched with zone info, or null on error.
+ */
+async function processLiveLocationUpdate(session, lat, lon, accuracy, heading, speed) {
+  const locationCheck = await checkLocationInZones(lat, lon, session.userId);
+
+  const point = await prisma.locationPoint.create({
+    data: {
+      sessionId: session.id,
+      latitude: lat,
+      longitude: lon,
+      accuracy: accuracy ?? null,
+      heading: heading ?? null,
+      speed: speed ?? null,
+      isWithinZone: locationCheck.isWithinZone
+    }
+  });
+
+  await prisma.trackingSession.update({
+    where: { id: session.id },
+    data: { lastUpdateAt: new Date() }
+  });
+
+  await _handleZoneTransition(session, locationCheck);
+
+  return { ...point, distanceToZone: locationCheck.distanceToZone, zoneId: locationCheck.zoneId };
+}
+
+async function _handleZoneTransition(session, locationCheck) {
+  if (!locationCheck.isWithinZone && !session.zoneExitNotified) {
+    await prisma.trackingSession.update({
+      where: { id: session.id },
+      data: { zoneExitNotified: true }
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: session.userId } });
+    if (!user) return;
+
+    const deadlineMinutes = user.reportDeadlineMinutes || 5;
+    const checkInRequest = await prisma.checkInRequest.create({
+      data: {
+        userId: session.userId,
+        status: 'PENDING',
+        expiresAt: new Date(Date.now() + deadlineMinutes * 60 * 1000)
+      }
+    });
+
+    const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
+    try {
+      const sentMessage = await bot.telegram.sendMessage(
+        user.telegramId,
+        `📸 Вы покинули рабочую зону!\n\nПожалуйста, отправьте фото для подтверждения.\n⏱ На сдачу отчета есть ${deadlineMinutes} мин.`,
+        Markup.inlineKeyboard([
+          [Markup.button.webApp('Отправить фото', checkInUrl)]
+        ])
+      );
+      await prisma.checkInRequest.update({
+        where: { id: checkInRequest.id },
+        data: { telegramMessageId: sentMessage.message_id }
+      });
+      log('INFO', 'TRACKING', 'Zone exit photo check-in sent', {
+        userId: session.userId,
+        sessionId: session.id,
+        checkInRequestId: checkInRequest.id
+      });
+    } catch (error) {
+      log('ERROR', 'TRACKING', 'Failed to send zone exit notification', {
+        userId: session.userId,
+        error: error.message
+      });
+    }
+
+    _notifyDirectorsAboutZoneExit(user);
+  } else if (locationCheck.isWithinZone && session.zoneExitNotified) {
+    await prisma.trackingSession.update({
+      where: { id: session.id },
+      data: { zoneExitNotified: false }
+    });
+    log('INFO', 'TRACKING', 'Employee returned to zone, reset notification flag', {
+      userId: session.userId,
+      sessionId: session.id
+    });
+  }
+}
+
+async function _notifyDirectorsAboutZoneExit(employee) {
+  const directors = await prisma.user.findMany({
+    where: { role: 'DIRECTOR' },
+    select: { telegramId: true }
+  });
+  const label = employee.displayName || employee.name || 'Сотрудник';
+  for (const director of directors) {
+    try {
+      await bot.telegram.sendMessage(
+        director.telegramId,
+        `⚠️ Сотрудник ${label} покинул рабочую зону (трекинг)`
+      );
+    } catch (error) {
+      log('ERROR', 'TRACKING', 'Failed to notify director about zone exit', {
+        directorTelegramId: director.telegramId,
+        error: error.message
+      });
+    }
+  }
+}
+
+/**
+ * Emits a location update event to all connected directors via WebSocket.
+ */
+function emitTrackingUpdate(session, point, employee) {
+  io.to('directors').emit('tracking:locationUpdate', {
+    sessionId: session.id,
+    employeeId: session.userId,
+    employeeName: employee?.displayName || employee?.name || 'Сотрудник',
+    latitude: point.latitude,
+    longitude: point.longitude,
+    accuracy: point.accuracy,
+    isWithinZone: point.isWithinZone,
+    distanceToZone: point.distanceToZone,
+    timestamp: point.timestamp || new Date().toISOString()
+  });
+}
+
+/**
+ * Calculates live_period in seconds based on employee work schedule.
+ * Capped at 28800 (8 hours, Telegram maximum).
+ */
+function _calculateLivePeriod(employee) {
+  const now = getSchedulerNow();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const endMinutes = employee.workEndMinutes ?? 1080;
+  const remainingMinutes = Math.max(endMinutes - currentMinutes, 30);
+  return Math.min(remainingMinutes * 60, 28800);
+}
+
+/**
+ * Creates a TrackingSession and sends a Telegram message with a WebApp button.
+ * Returns the created session.
+ */
+async function _createTrackingSessionWithButton(employee, source) {
+  const livePeriod = _calculateLivePeriod(employee);
+  const hours = Math.round(livePeriod / 3600);
+
+  const session = await prisma.trackingSession.create({
+    data: {
+      userId: employee.id,
+      livePeriod,
+      lastUpdateAt: new Date()
+    }
+  });
+
+  const trackingUrl = `${WEB_APP_URL}/tracking?sessionId=${session.id}`;
+  const messageText = source === 'director_request'
+    ? `📡 Директор запросил трансляцию геолокации!\n\nВаши перемещения будут отслеживаться ~${hours} ч.\nНажмите кнопку ниже, чтобы начать.`
+    : `📡 Рабочий день начался!\n\nВаши перемещения будут отслеживаться ~${hours} ч.\nНажмите кнопку ниже, чтобы начать.`;
+
+  try {
+    const sentMessage = await bot.telegram.sendMessage(
+      employee.telegramId,
+      messageText,
+      Markup.inlineKeyboard([
+        [Markup.button.webApp('📡 Начать трансляцию', trackingUrl)]
+      ])
+    );
+
+    await prisma.trackingSession.update({
+      where: { id: session.id },
+      data: { telegramMessageId: sentMessage.message_id }
+    });
+
+    io.to('directors').emit('tracking:sessionStarted', {
+      sessionId: session.id,
+      employeeId: employee.id,
+      employeeName: employee.displayName || employee.name,
+      livePeriod
+    });
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Failed to send tracking button message', {
+      employeeId: employee.id,
+      error: error.message
+    });
+  }
+
+  return session;
+}
+
+// ─── End Live Location Tracking helpers ──────────────────────────────────────
 
 const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5]; // Пн-Пт (0 - Вс)
 const MIN_CHECKIN_MINUTES = 25;
@@ -2952,6 +3153,277 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+// ─── Tracking API endpoints ──────────────────────────────────────────────────
+
+// Director manually requests an employee to share live location
+app.post('/api/tracking/request/:employeeId', async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const employee = await prisma.user.findUnique({
+      where: { id: employeeId },
+      select: { id: true, telegramId: true, name: true, displayName: true, workEndMinutes: true }
+    });
+
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    const existingSession = await prisma.trackingSession.findFirst({
+      where: { userId: employeeId, status: 'ACTIVE' }
+    });
+    if (existingSession) {
+      return res.status(400).json({ error: 'Tracking session already active', sessionId: existingSession.id });
+    }
+
+    const session = await _createTrackingSessionWithButton(employee, 'director_request');
+
+    const label = employee.displayName || employee.name || 'Сотрудник';
+    log('INFO', 'TRACKING', 'Manual tracking request sent', {
+      employeeId, employeeName: label, sessionId: session.id
+    });
+    res.json({ success: true, sessionId: session.id, message: `Запрос на трекинг отправлен сотруднику ${label}` });
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error requesting tracking', { error: error.message });
+    res.status(500).json({ error: 'Failed to request tracking' });
+  }
+});
+
+// Mini App submits location updates for an active tracking session
+app.post('/api/tracking/location', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { id: telegramId } = req.telegramUser;
+    const { sessionId, latitude, longitude, accuracy } = req.body;
+
+    if (!sessionId || latitude == null || longitude == null) {
+      return res.status(400).json({ error: 'sessionId, latitude, longitude are required' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { telegramId: String(telegramId) } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const session = await prisma.trackingSession.findUnique({ where: { id: sessionId } });
+    if (!session || session.userId !== user.id) {
+      return res.status(403).json({ error: 'Session not found or access denied' });
+    }
+    if (session.status !== 'ACTIVE') {
+      return res.status(410).json({ error: 'Session is no longer active', status: session.status });
+    }
+
+    const point = await processLiveLocationUpdate(
+      session, latitude, longitude, accuracy ?? null, null, null
+    );
+    emitTrackingUpdate(session, point, user);
+
+    res.json({
+      success: true,
+      isWithinZone: point.isWithinZone,
+      distanceToZone: point.distanceToZone
+    });
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error processing tracking location from Mini App', { error: error.message });
+    res.status(500).json({ error: 'Failed to process location' });
+  }
+});
+
+// Get tracking session status (for Mini App to detect if session was stopped)
+app.get('/api/tracking/session/:sessionId/status', verifyTelegramWebApp, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const session = await prisma.trackingSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, status: true, startedAt: true, endedAt: true, zoneExitNotified: true }
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json(session);
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error fetching session status', { error: error.message });
+    res.status(500).json({ error: 'Failed to fetch session status' });
+  }
+});
+
+// Director stops a tracking session
+app.post('/api/tracking/stop/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const session = await prisma.trackingSession.findUnique({
+      where: { id: sessionId },
+      include: { user: { select: { name: true, displayName: true } } }
+    });
+
+    if (!session || session.status !== 'ACTIVE') {
+      return res.status(404).json({ error: 'Active session not found' });
+    }
+
+    await prisma.trackingSession.update({
+      where: { id: sessionId },
+      data: { status: 'STOPPED', endedAt: new Date() }
+    });
+
+    io.to('directors').emit('tracking:sessionStopped', {
+      sessionId,
+      employeeId: session.userId,
+      reason: 'director_stopped'
+    });
+
+    log('INFO', 'TRACKING', 'Session stopped by director', { sessionId, userId: session.userId });
+    res.json({ success: true });
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error stopping tracking', { error: error.message });
+    res.status(500).json({ error: 'Failed to stop tracking' });
+  }
+});
+
+// Get all active tracking sessions with latest point
+app.get('/api/tracking/active', async (req, res) => {
+  try {
+    const sessions = await prisma.trackingSession.findMany({
+      where: { status: 'ACTIVE' },
+      include: {
+        user: { select: { id: true, name: true, displayName: true, telegramId: true } },
+        points: { orderBy: { timestamp: 'desc' }, take: 1 }
+      }
+    });
+
+    const result = sessions.map((s) => ({
+      sessionId: s.id,
+      employeeId: s.userId,
+      employeeName: s.user.displayName || s.user.name,
+      startedAt: s.startedAt,
+      livePeriod: s.livePeriod,
+      lastUpdateAt: s.lastUpdateAt,
+      zoneExitNotified: s.zoneExitNotified,
+      lastPoint: s.points[0] || null
+    }));
+
+    res.json(result);
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error fetching active sessions', { error: error.message });
+    res.status(500).json({ error: 'Failed to fetch active sessions' });
+  }
+});
+
+// Get all points for a session (for polyline drawing)
+app.get('/api/tracking/session/:sessionId/points', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const points = await prisma.locationPoint.findMany({
+      where: { sessionId },
+      orderBy: { timestamp: 'asc' },
+      select: {
+        id: true, latitude: true, longitude: true,
+        accuracy: true, isWithinZone: true, timestamp: true
+      }
+    });
+    res.json(points);
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error fetching session points', { error: error.message });
+    res.status(500).json({ error: 'Failed to fetch session points' });
+  }
+});
+
+// Get tracking history for an employee (daily summaries)
+app.get('/api/tracking/history/:employeeId', async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    const where = { userId: employeeId };
+    if (startDate || endDate) {
+      where.startedAt = {};
+      if (startDate) where.startedAt.gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setDate(end.getDate() + 1);
+        where.startedAt.lte = end;
+      }
+    }
+
+    const sessions = await prisma.trackingSession.findMany({
+      where,
+      orderBy: { startedAt: 'desc' },
+      include: {
+        points: {
+          orderBy: { timestamp: 'asc' },
+          select: {
+            latitude: true, longitude: true,
+            isWithinZone: true, timestamp: true
+          }
+        }
+      }
+    });
+
+    const result = sessions.map((s) => {
+      const totalPoints = s.points.length;
+      const inZonePoints = s.points.filter((p) => p.isWithinZone).length;
+      const outZonePoints = totalPoints - inZonePoints;
+      let totalDistanceM = 0;
+      for (let i = 1; i < s.points.length; i++) {
+        totalDistanceM += calculateDistance(
+          s.points[i - 1].latitude, s.points[i - 1].longitude,
+          s.points[i].latitude, s.points[i].longitude
+        );
+      }
+
+      return {
+        sessionId: s.id,
+        startedAt: s.startedAt,
+        endedAt: s.endedAt,
+        status: s.status,
+        totalPoints,
+        inZonePoints,
+        outZonePoints,
+        totalDistanceM: Math.round(totalDistanceM),
+        points: s.points
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error fetching tracking history', { error: error.message });
+    res.status(500).json({ error: 'Failed to fetch tracking history' });
+  }
+});
+
+// Get employees with tracking status (for director panel)
+app.get('/api/tracking/employees', async (req, res) => {
+  try {
+    const employees = await prisma.user.findMany({
+      where: { role: 'EMPLOYEE' },
+      select: {
+        id: true, name: true, displayName: true, telegramId: true,
+        checkInsEnabled: true, workStartMinutes: true, workEndMinutes: true,
+        trackingSessions: {
+          where: { status: 'ACTIVE' },
+          select: { id: true, startedAt: true, lastUpdateAt: true, zoneExitNotified: true },
+          take: 1
+        }
+      }
+    });
+
+    const result = employees.map((e) => ({
+      id: e.id,
+      name: e.displayName || e.name,
+      checkInsEnabled: e.checkInsEnabled,
+      workStartMinutes: e.workStartMinutes,
+      workEndMinutes: e.workEndMinutes,
+      activeSession: e.trackingSessions[0] || null
+    }));
+
+    res.json(result);
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error fetching employees with tracking status', { error: error.message });
+    res.status(500).json({ error: 'Failed to fetch employees' });
+  }
+});
+
+// ─── End Tracking API endpoints ──────────────────────────────────────────────
+
 // SPA fallback route - serve index.html for all non-API routes
 app.get('*', (req, res) => {
   // Skip API routes and static assets
@@ -2966,8 +3438,6 @@ app.get('*', (req, res) => {
   
   res.sendFile(join(__dirname, '../client/dist/index.html'));
 });
-
-const WEB_APP_URL = process.env.WEB_APP_URL || `http://localhost:${PORT}`;
 
 // Bot handlers
 bot.start(async (ctx) => {
@@ -3048,41 +3518,108 @@ bot.command('admin', async (ctx) => {
   await ctx.reply('✅ Вы получили права директора!');
 });
 
-// Handle location (fallback for direct location send)
+// Handle location (check-in fallback + live location start)
 bot.on('location', async (ctx) => {
-  const userId = String(ctx.from.id);
+  const telegramId = String(ctx.from.id);
   const location = ctx.message.location;
 
   log('INFO', 'BOT', 'Location received via bot', {
-    telegramId: userId,
+    telegramId,
     latitude: location.latitude,
-    longitude: location.longitude
+    longitude: location.longitude,
+    livePeriod: location.live_period
   });
 
-  const user = await prisma.user.findUnique({
-    where: { telegramId: userId }
-  });
-
+  const user = await prisma.user.findUnique({ where: { telegramId } });
   if (!user) {
-    log('WARN', 'BOT', 'User not found for location', {
-      telegramId: userId
-    });
     return ctx.reply('Пользователь не найден. Отправьте /start');
   }
 
-  const pendingRequest = await prisma.checkInRequest.findFirst({
-    where: {
+  if (location.live_period) {
+    await _handleLiveLocationStart(ctx, user, location);
+    return;
+  }
+
+  await _handleOneTimeLocation(ctx, user, location);
+});
+
+/**
+ * Handles the start of a Telegram Live Location sharing session.
+ */
+async function _handleLiveLocationStart(ctx, user, location) {
+  const existingSession = await prisma.trackingSession.findFirst({
+    where: { userId: user.id, status: 'ACTIVE' }
+  });
+  if (existingSession) {
+    await prisma.trackingSession.update({
+      where: { id: existingSession.id },
+      data: { status: 'STOPPED', endedAt: new Date() }
+    });
+    log('INFO', 'TRACKING', 'Stopped previous active session before new one', {
+      oldSessionId: existingSession.id,
+      userId: user.id
+    });
+  }
+
+  const session = await prisma.trackingSession.create({
+    data: {
       userId: user.id,
-      status: 'PENDING'
-    },
+      livePeriod: location.live_period,
+      telegramMessageId: ctx.message.message_id,
+      lastUpdateAt: new Date()
+    }
+  });
+
+  const point = await processLiveLocationUpdate(
+    session, location.latitude, location.longitude, location.horizontal_accuracy, location.heading, null
+  );
+
+  emitTrackingUpdate(session, point, user);
+  io.to('directors').emit('tracking:sessionStarted', {
+    sessionId: session.id,
+    employeeId: user.id,
+    employeeName: user.displayName || user.name,
+    livePeriod: location.live_period
+  });
+
+  log('INFO', 'TRACKING', 'Live location session started', {
+    sessionId: session.id,
+    userId: user.id,
+    livePeriod: location.live_period
+  });
+
+  await ctx.reply('📡 Трансляция геолокации начата! Ваши перемещения отслеживаются.');
+
+  const directors = await prisma.user.findMany({
+    where: { role: 'DIRECTOR' },
+    select: { telegramId: true }
+  });
+  const label = user.displayName || user.name || 'Сотрудник';
+  for (const director of directors) {
+    try {
+      await bot.telegram.sendMessage(
+        director.telegramId,
+        `📡 Сотрудник ${label} начал трансляцию геолокации (${Math.round(location.live_period / 3600)} ч)`
+      );
+    } catch (error) {
+      log('ERROR', 'TRACKING', 'Failed to notify director about session start', {
+        error: error.message
+      });
+    }
+  }
+}
+
+/**
+ * Handles a one-time (non-live) location message for check-in.
+ */
+async function _handleOneTimeLocation(ctx, user, location) {
+  const telegramId = String(ctx.from.id);
+  const pendingRequest = await prisma.checkInRequest.findFirst({
+    where: { userId: user.id, status: 'PENDING' },
     orderBy: { requestedAt: 'desc' }
   });
 
   if (!pendingRequest) {
-    log('WARN', 'BOT', 'No pending request for location', {
-      telegramId: userId,
-      userId: user.id
-    });
     return ctx.reply('Нет активных запросов на проверку');
   }
 
@@ -3093,7 +3630,7 @@ bot.on('location', async (ctx) => {
     });
     if (pendingRequest.telegramMessageId) {
       await clearCheckInButton(user.telegramId, pendingRequest.telegramMessageId, {
-        telegramId: userId
+        telegramId
       });
     }
     return ctx.reply('⏱ Время на отчет истекло. Запрос закрыт.');
@@ -3128,7 +3665,7 @@ bot.on('location', async (ctx) => {
   }
 
   log('INFO', 'BOT', 'Location processed via bot', {
-    telegramId: userId,
+    telegramId,
     userId: user.id,
     checkInRequestId: pendingRequest.id,
     isWithinZone: locationCheck.isWithinZone,
@@ -3136,10 +3673,9 @@ bot.on('location', async (ctx) => {
   });
 
   await finalizeCheckInIfReady(pendingRequest.id);
-
   const status = locationCheck.isWithinZone ? '✅ Вы в рабочей зоне!' : '❌ Вы вне рабочей зоны';
   await ctx.reply(`${status}\nРасстояние до ближайшей зоны: ${Math.round(locationCheck.distanceToZone || 0)}м`);
-});
+}
 
 // Handle photo (fallback for direct photo send)
 bot.on('photo', async (ctx) => {
@@ -3224,6 +3760,51 @@ bot.on('photo', async (ctx) => {
       userId: user.id
     });
   }
+});
+
+// Handle edited_message for live location updates
+bot.on('edited_message', async (ctx) => {
+  const editedMessage = ctx.editedMessage;
+  if (!editedMessage?.location) return;
+
+  const telegramId = String(editedMessage.from.id);
+  const location = editedMessage.location;
+
+  try {
+    const user = await prisma.user.findUnique({ where: { telegramId } });
+    if (!user) return;
+
+    const session = await prisma.trackingSession.findFirst({
+      where: { userId: user.id, status: 'ACTIVE' }
+    });
+    if (!session) return;
+
+    const point = await processLiveLocationUpdate(
+      session, location.latitude, location.longitude,
+      location.horizontal_accuracy, location.heading, null
+    );
+
+    emitTrackingUpdate(session, point, user);
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error processing live location update', {
+      telegramId,
+      error: error.message
+    });
+  }
+});
+
+// ─── WebSocket connection handler ────────────────────────────────────────────
+
+io.on('connection', (socket) => {
+  const role = socket.handshake.auth?.role;
+  if (role === 'DIRECTOR') {
+    socket.join('directors');
+    log('INFO', 'WS', 'Director connected to WebSocket', { socketId: socket.id });
+  }
+
+  socket.on('disconnect', () => {
+    log('INFO', 'WS', 'Client disconnected from WebSocket', { socketId: socket.id });
+  });
 });
 
 // Cron job for randomized check-ins
@@ -3701,8 +4282,154 @@ cron.schedule('0 2 * * *', async () => {
   }
 });
 
+// ─── Tracking cron jobs ──────────────────────────────────────────────────────
+
+// Auto-request live location at work start
+cron.schedule('* * * * *', async () => {
+  try {
+    const now = getSchedulerNow();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const employees = await prisma.user.findMany({
+      where: { role: 'EMPLOYEE', checkInsEnabled: true },
+      select: {
+        id: true, telegramId: true, name: true, displayName: true,
+        workDays: true, workStartMinutes: true, workEndMinutes: true,
+        trackingSessions: {
+          where: { status: 'ACTIVE' },
+          select: { id: true }
+        }
+      }
+    });
+
+    for (const employee of employees) {
+      if (employee.trackingSessions.length > 0) continue;
+
+      const workDays = parseWorkDays(employee.workDays);
+      const dayOfWeek = now.getDay();
+      if (!workDays.includes(dayOfWeek)) continue;
+
+      const startMinutes = employee.workStartMinutes ?? 540;
+      if (Math.abs(currentMinutes - startMinutes) > 2) continue;
+
+      const label = employee.displayName || employee.name || 'Сотрудник';
+
+      try {
+        await _createTrackingSessionWithButton(employee, 'work_start');
+        log('INFO', 'TRACKING', 'Auto tracking request sent via WebApp button', {
+          employeeId: employee.id,
+          employeeName: label
+        });
+      } catch (error) {
+        log('ERROR', 'TRACKING', 'Failed to send auto tracking request', {
+          employeeId: employee.id,
+          error: error.message
+        });
+      }
+    }
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error in auto tracking request cron', { error: error.message });
+  }
+});
+
+// Detect stopped sharing (no updates for TRACKING_TIMEOUT_MINUTES)
+cron.schedule('* * * * *', async () => {
+  try {
+    const timeoutThreshold = new Date(Date.now() - TRACKING_TIMEOUT_MINUTES * 60 * 1000);
+
+    const staleSessions = await prisma.trackingSession.findMany({
+      where: {
+        status: 'ACTIVE',
+        lastUpdateAt: { lt: timeoutThreshold }
+      },
+      include: { user: { select: { id: true, telegramId: true, name: true, displayName: true } } }
+    });
+
+    for (const session of staleSessions) {
+      await prisma.trackingSession.update({
+        where: { id: session.id },
+        data: { status: 'STOPPED', endedAt: new Date() }
+      });
+
+      io.to('directors').emit('tracking:sessionStopped', {
+        sessionId: session.id,
+        employeeId: session.userId,
+        reason: 'timeout'
+      });
+
+      const label = session.user.displayName || session.user.name || 'Сотрудник';
+      const directors = await prisma.user.findMany({
+        where: { role: 'DIRECTOR' },
+        select: { telegramId: true }
+      });
+      for (const director of directors) {
+        try {
+          await bot.telegram.sendMessage(
+            director.telegramId,
+            `⚠️ Сотрудник ${label} прекратил трансляцию геолокации`
+          );
+        } catch (error) {
+          log('ERROR', 'TRACKING', 'Failed to notify director about stopped session', {
+            error: error.message
+          });
+        }
+      }
+
+      log('INFO', 'TRACKING', 'Session marked as stopped due to timeout', {
+        sessionId: session.id,
+        userId: session.userId,
+        lastUpdateAt: session.lastUpdateAt
+      });
+    }
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error in tracking timeout cron', { error: error.message });
+  }
+});
+
+// End-of-day: complete active sessions at workEndMinutes
+cron.schedule('* * * * *', async () => {
+  try {
+    const now = getSchedulerNow();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const activeSessions = await prisma.trackingSession.findMany({
+      where: { status: 'ACTIVE' },
+      include: {
+        user: {
+          select: { id: true, workEndMinutes: true, name: true, displayName: true }
+        }
+      }
+    });
+
+    for (const session of activeSessions) {
+      const endMinutes = session.user.workEndMinutes ?? 1080;
+      if (currentMinutes < endMinutes) continue;
+
+      await prisma.trackingSession.update({
+        where: { id: session.id },
+        data: { status: 'COMPLETED', endedAt: new Date() }
+      });
+
+      io.to('directors').emit('tracking:sessionStopped', {
+        sessionId: session.id,
+        employeeId: session.userId,
+        reason: 'workday_ended'
+      });
+
+      const label = session.user.displayName || session.user.name || 'Сотрудник';
+      log('INFO', 'TRACKING', 'Session completed at end of workday', {
+        sessionId: session.id,
+        userId: session.userId,
+        employeeName: label
+      });
+    }
+  } catch (error) {
+    log('ERROR', 'TRACKING', 'Error in end-of-day tracking cron', { error: error.message });
+  }
+});
+
 // Start server
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   log('INFO', 'STARTUP', 'Server started', {
     port: PORT,
     nodeEnv: process.env.NODE_ENV || 'production',
