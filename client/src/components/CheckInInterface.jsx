@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import CameraView from './CameraView';
+import { waitForTelegramInitData } from '../telegramWebAppInit';
 
 export default function CheckInInterface({ requestId, user, onComplete }) {
   const [locationSent, setLocationSent] = useState(false);
@@ -54,7 +55,13 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
     setPhotoError(null);
 
     try {
-      const initData = getTelegramInitData();
+      const initData = await waitForTelegramInitData(4000);
+      if (!initData) {
+        setPhotoError(
+          'Не удалось получить данные Telegram. Пожалуйста, откройте приложение через Telegram бота.'
+        );
+        return false;
+      }
       const formData = new FormData();
       formData.append('photo', file);
       if (requestId) {
@@ -122,6 +129,16 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
     const startTime = Date.now();
 
     try {
+      const initDataForAuth = await waitForTelegramInitData(4000);
+      if (!initDataForAuth) {
+        setLocationError(
+          'Не удалось получить данные Telegram. Закройте мини-приложение и откройте проверку снова из кнопки в боте.'
+        );
+        setLoading(false);
+        setGeoStatus(null);
+        return;
+      }
+
       const locationSources = [];
       if (telegramLocationAvailable) {
         locationSources.push('telegram');
@@ -205,7 +222,6 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
 
       setGeoStatus('success');
 
-      const initData = getTelegramInitData();
       const response = await axios.post(
         '/api/check-in/location',
         {
@@ -214,7 +230,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
           accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
         },
         {
-          headers: { 'x-telegram-init-data': initData },
+          headers: { 'x-telegram-init-data': initDataForAuth },
           timeout: 15000
         }
       );
