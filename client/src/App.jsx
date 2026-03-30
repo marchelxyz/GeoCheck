@@ -177,53 +177,47 @@ function App() {
 
     if (!window.Telegram) {
       await new Promise(resolve => setTimeout(resolve, 500));
-      
-      if (!window.Telegram?.WebApp) {
-        console.warn('Telegram WebApp not available, using mock data');
-        setUser({ id: 'dev', role: 'DIRECTOR' });
-        setRole('DIRECTOR');
-        setLoading(false);
-        return;
-      }
     }
 
-    if (window.Telegram?.WebApp) {
-      window.Telegram.WebApp.ready();
-      window.Telegram.WebApp.expand();
-      
-      const initData = getTelegramInitData();
-      
-      if (!initData) {
-        console.error('Telegram initData is not available');
-        setError('Не удалось получить данные Telegram. Пожалуйста, откройте приложение через Telegram бота.');
-        setLoading(false);
-        return;
+    if (!window.Telegram?.WebApp) {
+      console.error('Telegram WebApp not available');
+      setError(
+        'Откройте приложение через Telegram-бота. В обычном браузере панель недоступна.'
+      );
+      setLoading(false);
+      return;
+    }
+
+    window.Telegram.WebApp.ready();
+    window.Telegram.WebApp.expand();
+
+    const initData = getTelegramInitData();
+
+    if (!initData) {
+      console.error('Telegram initData is not available');
+      setError('Не удалось получить данные Telegram. Пожалуйста, откройте приложение через Telegram бота.');
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const userResponse = await withRetry(() =>
+        axios.post('/api/user', {}, {
+          headers: { 'x-telegram-init-data': initData }
+        })
+      );
+
+      setUser(userResponse.data);
+      setRole(userResponse.data.role);
+    } catch (error) {
+      if (error.response?.status === 404) {
+        setUser(null);
+        setRole(null);
+      } else {
+        console.error('Error initializing user:', error);
+        setError(error.response?.data?.error || 'Ошибка соединения. Проверьте интернет-подключение и попробуйте снова.');
       }
-      
-      try {
-        const userResponse = await withRetry(() =>
-          axios.post('/api/user', {}, {
-            headers: { 'x-telegram-init-data': initData }
-          })
-        );
-        
-        setUser(userResponse.data);
-        setRole(userResponse.data.role);
-      } catch (error) {
-        if (error.response?.status === 404) {
-          setUser(null);
-          setRole(null);
-        } else {
-          console.error('Error initializing user:', error);
-          setError(error.response?.data?.error || 'Ошибка соединения. Проверьте интернет-подключение и попробуйте снова.');
-        }
-      } finally {
-        setLoading(false);
-      }
-    } else {
-      console.warn('Telegram WebApp not available, using mock data');
-      setUser({ id: 'dev', role: 'DIRECTOR' });
-      setRole('DIRECTOR');
+    } finally {
       setLoading(false);
     }
   }, []);

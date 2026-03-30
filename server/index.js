@@ -513,20 +513,44 @@ function parseInitData(initData) {
   return JSON.parse(userStr);
 }
 
+/**
+ * Reads initData without using || (empty string "" is falsy and would be wrongly skipped).
+ */
+function _getTelegramInitDataRaw(req) {
+  const lower = req.headers['x-telegram-init-data'];
+  if (lower !== undefined && lower !== null) {
+    return lower;
+  }
+  const mixed = req.headers['X-Telegram-Init-Data'];
+  if (mixed !== undefined && mixed !== null) {
+    return mixed;
+  }
+  const upper = req.headers['X-TELEGRAM-INIT-DATA'];
+  if (upper !== undefined && upper !== null) {
+    return upper;
+  }
+  if (req.query?.initData !== undefined && req.query?.initData !== null) {
+    return req.query.initData;
+  }
+  if (req.query?.tgInitData !== undefined && req.query?.tgInitData !== null) {
+    return req.query.tgInitData;
+  }
+  return undefined;
+}
+
 // Middleware to verify Telegram Web App
 function verifyTelegramWebApp(req, res, next) {
-  const initDataRaw = req.headers['x-telegram-init-data'] ||
-                   req.headers['X-Telegram-Init-Data'] ||
-                   req.headers['X-TELEGRAM-INIT-DATA'] ||
-                   req.query?.initData ||
-                   req.query?.tgInitData;
+  const initDataRaw = _getTelegramInitDataRaw(req);
+  const isEmptyString =
+    initDataRaw == null ||
+    (typeof initDataRaw === 'string' && initDataRaw.trim() === '');
   const initData =
-    typeof initDataRaw === 'string' ? initDataRaw.trim() : initDataRaw;
+    typeof initDataRaw === 'string' ? initDataRaw : String(initDataRaw);
 
-  if (!initData) {
+  if (isEmptyString) {
     log('WARN', 'AUTH', 'Missing or empty Telegram init data', {
       requestId: req.requestId,
-      hadHeader: Boolean(initDataRaw),
+      headerPresent: req.headers['x-telegram-init-data'] !== undefined,
       availableHeaders: Object.keys(req.headers).filter((h) => h.toLowerCase().includes('telegram'))
     });
     return res.status(401).json({ 
