@@ -443,6 +443,9 @@ async function reportClientEvent({ eventType, eventData, requestId }) {
   if (!eventType) {
     return;
   }
+  if (!getTelegramInitData()) {
+    return;
+  }
   try {
     const payload = {
       eventType,

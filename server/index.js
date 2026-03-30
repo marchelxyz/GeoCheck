@@ -523,16 +523,19 @@ function parseInitData(initData) {
 
 // Middleware to verify Telegram Web App
 function verifyTelegramWebApp(req, res, next) {
-  const initData = req.headers['x-telegram-init-data'] || 
+  const initDataRaw = req.headers['x-telegram-init-data'] ||
                    req.headers['X-Telegram-Init-Data'] ||
                    req.headers['X-TELEGRAM-INIT-DATA'] ||
                    req.query?.initData ||
                    req.query?.tgInitData;
-  
+  const initData =
+    typeof initDataRaw === 'string' ? initDataRaw.trim() : initDataRaw;
+
   if (!initData) {
-    log('WARN', 'AUTH', 'Missing Telegram init data header', {
+    log('WARN', 'AUTH', 'Missing or empty Telegram init data', {
       requestId: req.requestId,
-      availableHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('telegram'))
+      hadHeader: Boolean(initDataRaw),
+      availableHeaders: Object.keys(req.headers).filter((h) => h.toLowerCase().includes('telegram'))
     });
     return res.status(401).json({ 
       error: 'Missing Telegram init data. Пожалуйста, откройте приложение через Telegram бота.' 
@@ -646,6 +649,16 @@ async function checkLocationInZones(lat, lon, userId) {
   };
 }
 
+/**
+ * Returns whether a value can be used as Telegram Bot API chat_id.
+ */
+function _hasValidTelegramChatId(telegramId) {
+  if (telegramId == null) {
+    return false;
+  }
+  return String(telegramId).trim().length > 0;
+}
+
 // ─── Live Location Tracking helpers ──────────────────────────────────────────
 
 // Native Live Location обновляется редко при неподвижном телефоне (5–15+ мин).
@@ -741,10 +754,16 @@ async function _handleZoneTransition(session, locationCheck) {
 async function _notifyDirectorsAboutZoneExit(employee) {
   const directors = await prisma.user.findMany({
     where: { role: 'DIRECTOR' },
-    select: { telegramId: true }
+    select: { id: true, telegramId: true }
   });
   const label = employee.displayName || employee.name || 'Сотрудник';
   for (const director of directors) {
+    if (!_hasValidTelegramChatId(director.telegramId)) {
+      log('WARN', 'TRACKING', 'Skipping director without telegramId (zone exit)', {
+        directorId: director.id
+      });
+      continue;
+    }
     try {
       await bot.telegram.sendMessage(
         director.telegramId,
@@ -3537,10 +3556,16 @@ async function _handleLiveLocationStart(ctx, user, location) {
 
   const directors = await prisma.user.findMany({
     where: { role: 'DIRECTOR' },
-    select: { telegramId: true }
+    select: { id: true, telegramId: true }
   });
   const label = user.displayName || user.name || 'Сотрудник';
   for (const director of directors) {
+    if (!_hasValidTelegramChatId(director.telegramId)) {
+      log('WARN', 'TRACKING', 'Skipping director without telegramId (session start)', {
+        directorId: director.id
+      });
+      continue;
+    }
     try {
       await bot.telegram.sendMessage(
         director.telegramId,
@@ -3798,7 +3823,7 @@ cron.schedule('* * * * *', async () => {
 
   const directors = await prisma.user.findMany({
     where: { role: 'DIRECTOR' },
-    select: { reportDeadlineMinutes: true }
+    select: { id: true, telegramId: true, reportDeadlineMinutes: true }
   });
 
   const directorDeadlines = directors
@@ -3917,6 +3942,12 @@ cron.schedule('* * * * *', async () => {
       }
 
       for (const director of directors) {
+        if (!_hasValidTelegramChatId(director.telegramId)) {
+          log('WARN', 'CRON', 'Skipping director without telegramId (check-in notify)', {
+            directorId: director.id
+          });
+          continue;
+        }
         try {
           await bot.telegram.sendMessage(
             director.telegramId,
@@ -4308,9 +4339,15 @@ cron.schedule('* * * * *', async () => {
       const label = session.user.displayName || session.user.name || 'Сотрудник';
       const directors = await prisma.user.findMany({
         where: { role: 'DIRECTOR' },
-        select: { telegramId: true }
+        select: { id: true, telegramId: true }
       });
       for (const director of directors) {
+        if (!_hasValidTelegramChatId(director.telegramId)) {
+          log('WARN', 'TRACKING', 'Skipping director without telegramId (tracking timeout)', {
+            directorId: director.id
+          });
+          continue;
+        }
         try {
           await bot.telegram.sendMessage(
             director.telegramId,
