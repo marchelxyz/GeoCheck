@@ -515,16 +515,19 @@ function parseInitData(initData) {
 
 // Middleware to verify Telegram Web App
 function verifyTelegramWebApp(req, res, next) {
-  const initData = req.headers['x-telegram-init-data'] || 
+  const initDataRaw = req.headers['x-telegram-init-data'] ||
                    req.headers['X-Telegram-Init-Data'] ||
                    req.headers['X-TELEGRAM-INIT-DATA'] ||
                    req.query?.initData ||
                    req.query?.tgInitData;
-  
+  const initData =
+    typeof initDataRaw === 'string' ? initDataRaw.trim() : initDataRaw;
+
   if (!initData) {
-    log('WARN', 'AUTH', 'Missing Telegram init data header', {
+    log('WARN', 'AUTH', 'Missing or empty Telegram init data', {
       requestId: req.requestId,
-      availableHeaders: Object.keys(req.headers).filter(h => h.toLowerCase().includes('telegram'))
+      hadHeader: Boolean(initDataRaw),
+      availableHeaders: Object.keys(req.headers).filter((h) => h.toLowerCase().includes('telegram'))
     });
     return res.status(401).json({ 
       error: 'Missing Telegram init data. Пожалуйста, откройте приложение через Telegram бота.' 
@@ -556,6 +559,16 @@ function verifyTelegramWebApp(req, res, next) {
     username: user.username
   });
   next();
+}
+
+/**
+ * Returns whether a value can be used as Telegram Bot API chat_id.
+ */
+function _hasValidTelegramChatId(telegramId) {
+  if (telegramId == null) {
+    return false;
+  }
+  return String(telegramId).trim().length > 0;
 }
 
 // Haversine distance calculation
@@ -3269,7 +3282,7 @@ cron.schedule('* * * * *', async () => {
 
   const directors = await prisma.user.findMany({
     where: { role: 'DIRECTOR' },
-    select: { reportDeadlineMinutes: true }
+    select: { id: true, telegramId: true, reportDeadlineMinutes: true }
   });
 
   const directorDeadlines = directors
@@ -3388,6 +3401,12 @@ cron.schedule('* * * * *', async () => {
       }
 
       for (const director of directors) {
+        if (!_hasValidTelegramChatId(director.telegramId)) {
+          log('WARN', 'CRON', 'Skipping director without telegramId (check-in notify)', {
+            directorId: director.id
+          });
+          continue;
+        }
         try {
           await bot.telegram.sendMessage(
             director.telegramId,
