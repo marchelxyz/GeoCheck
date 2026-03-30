@@ -13,9 +13,6 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  const [geoPermissionDenied, setGeoPermissionDenied] = useState(() => {
-    return localStorage.getItem('geoPermissionDenied') === '1';
-  });
   const geoTotalTimeoutMs = 30000;
   const geoAccuracyThreshold = 150;
   const [geoStatus, setGeoStatus] = useState(null);
@@ -23,6 +20,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
 
   useEffect(() => {
     localStorage.removeItem('cameraPermissionDenied');
+    localStorage.removeItem('geoPermissionDenied');
   }, []);
 
   // Проверяем завершение чекинга и закрываем мини-приложение
@@ -115,11 +113,6 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
       return;
     }
 
-    if (!telegramLocationAvailable && geoPermissionDenied) {
-      setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
-      return;
-    }
-
     setLoading(true);
     setLocationError(null);
     setLocationAccuracy(null);
@@ -190,10 +183,6 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
             code: error?.code,
             message: error?.message
           });
-          if (source === 'browser' && error?.code === error.PERMISSION_DENIED) {
-            localStorage.setItem('geoPermissionDenied', '1');
-            setGeoPermissionDenied(true);
-          }
           if (Date.now() - startTime >= geoTotalTimeoutMs) {
             totalTimedOut = true;
             break;
@@ -206,10 +195,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
           setGeoStatus('failed');
           setGeoUnavailable(true);
           setLocationError('Геолокацию определить не удалось. Вы можете отправить только фото.');
-        } else if (
-          lastError?.source === 'browser' &&
-          lastError?.code === lastError.PERMISSION_DENIED
-        ) {
+        } else if (lastError?.source === 'browser' && lastError?.code === 1) {
           setLocationError('Доступ к геолокации запрещен. Разрешите доступ в настройках браузера.');
         } else {
           setLocationError('Не удалось получить геолокацию. Попробуйте еще раз.');
@@ -354,7 +340,22 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
               </div>
             )}
             {locationError && !geoUnavailable && (
-              <p className="text-sm text-red-600 mt-1">{locationError}</p>
+              <div className="mt-1 space-y-2">
+                <p className="text-sm text-red-600">{locationError}</p>
+                {locationError.includes('запрещен') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocationError(null);
+                      void handleSendLocation();
+                    }}
+                    disabled={loading}
+                    className="text-sm text-blue-600 underline disabled:opacity-50"
+                  >
+                    Попробовать снова (после разрешения в настройках)
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
