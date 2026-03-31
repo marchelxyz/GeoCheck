@@ -4,7 +4,11 @@ import DirectorView from './components/DirectorView';
 import EmployeeView from './components/EmployeeView';
 import CheckInInterface from './components/CheckInInterface';
 import Loading from './components/Loading';
-import { waitForTelegramInitData, waitForTelegramWebApp } from './telegramWebAppInit';
+import {
+  getTelegramInitDataString,
+  waitForTelegramInitData,
+  waitForTelegramWebApp
+} from './telegramWebAppInit.js';
 
 axios.defaults.timeout = 15000;
 
@@ -150,26 +154,8 @@ function App() {
   }
 
   const getTelegramInitData = () => {
-    if (!window.Telegram?.WebApp) {
-      return null;
-    }
-    
-    // Пробуем получить initData разными способами
-    const webApp = window.Telegram.WebApp;
-    
-    // Основной способ - через initData
-    if (webApp.initData) {
-      return webApp.initData;
-    }
-    
-    // Альтернативный способ - через initDataUnsafe (если доступен)
-    if (webApp.initDataUnsafe) {
-      // Если initDataUnsafe есть, но initData нет, нужно сформировать строку вручную
-      // Но лучше использовать готовый initData, если он есть
-      console.warn('initDataUnsafe available but initData is missing');
-    }
-    
-    return null;
+    const raw = getTelegramInitDataString();
+    return raw.length > 0 ? raw : null;
   };
 
   const initTelegramWebApp = useCallback(async () => {

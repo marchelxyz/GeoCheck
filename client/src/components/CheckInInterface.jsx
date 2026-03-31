@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import CameraView from './CameraView';
-import { waitForTelegramInitData } from '../telegramWebAppInit';
+import { getTelegramInitDataString, waitForTelegramInitData } from '../telegramWebAppInit.js';
 
 export default function CheckInInterface({ requestId, user, onComplete }) {
   const [locationSent, setLocationSent] = useState(false);
@@ -450,7 +450,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
  * Возвращает initData Telegram WebApp для авторизации запросов.
  */
 function getTelegramInitData() {
-  return window.Telegram?.WebApp?.initData || '';
+  return getTelegramInitDataString();
 }
 
 /**
