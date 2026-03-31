@@ -1,16 +1,22 @@
+import dns from 'node:dns';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
 import fs from 'fs';
 
-// Инициализация S3 клиента для Yandex Cloud
+// На части хостингов (например Railway) IPv6 до Yandex недоступен; Node иначе может
+// пробовать AAAA и получать AggregateError (ENETUNREACH + ETIMEDOUT). Как в mariko_vld + рекомендации Yandex для S3 API.
+dns.setDefaultResultOrder('ipv4first');
+
+// Инициализация S3 клиента для Yandex Cloud (path-style — как в документации Yandex Object Storage)
 const s3Client = new S3Client({
   endpoint: process.env.YC_S3_ENDPOINT || 'https://storage.yandexcloud.net',
   region: process.env.YC_S3_REGION || 'ru-central1',
   credentials: {
     accessKeyId: process.env.YC_S3_ACCESS_KEY_ID,
     secretAccessKey: process.env.YC_S3_SECRET_ACCESS_KEY
-  }
+  },
+  forcePathStyle: true
 });
 
 const BUCKET_NAME = process.env.YC_S3_BUCKET;
