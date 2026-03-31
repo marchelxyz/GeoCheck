@@ -1,12 +1,24 @@
 import dns from 'node:dns';
+import http from 'node:http';
+import https from 'node:https';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
 import fs from 'fs';
 
-// На части хостингов (например Railway) IPv6 до Yandex недоступен; Node иначе может
-// пробовать AAAA и получать AggregateError (ENETUNREACH + ETIMEDOUT). Как в mariko_vld + рекомендации Yandex для S3 API.
 dns.setDefaultResultOrder('ipv4first');
+
+/** Исходящие к S3 только по IPv4 (иначе Happy Eyeballs даёт ENETUNREACH по IPv6 с части хостингов). */
+const _s3AgentOpts = { family: 4, keepAlive: true, maxSockets: 50 };
+
+const _s3RequestHandler = new NodeHttpHandler({
+  httpAgent: new http.Agent(_s3AgentOpts),
+  httpsAgent: new https.Agent(_s3AgentOpts),
+  connectionTimeout: 45_000,
+  socketTimeout: 120_000,
+  requestTimeout: 300_000
+});
 
 // Инициализация S3 клиента для Yandex Cloud (path-style — как в документации Yandex Object Storage)
 const s3Client = new S3Client({
@@ -16,7 +28,8 @@ const s3Client = new S3Client({
     accessKeyId: process.env.YC_S3_ACCESS_KEY_ID,
     secretAccessKey: process.env.YC_S3_SECRET_ACCESS_KEY
   },
-  forcePathStyle: true
+  forcePathStyle: true,
+  requestHandler: _s3RequestHandler
 });
 
 const BUCKET_NAME = process.env.YC_S3_BUCKET;

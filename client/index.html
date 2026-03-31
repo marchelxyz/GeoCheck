@@ -11,7 +11,8 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
+    <!-- Сначала SDK Telegram: на части Android (Huawei и др.) он подгружается медленнее React -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
