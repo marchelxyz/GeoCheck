@@ -1,3 +1,4 @@
+import './bootstrap-net.js';
 import express from 'express';
 import { Telegraf, Markup } from 'telegraf';
 import cron from 'node-cron';
