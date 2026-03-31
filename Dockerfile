@@ -26,4 +26,5 @@ COPY server ./server
 COPY --from=client-builder /app/client/dist ./client/dist
 WORKDIR /app/server
 EXPOSE 3000
-CMD ["node", "index.js"]
+# Предпочитать IPv4 при обращении к внешним API (Yandex S3 с части облаков без маршрута IPv6)
+CMD ["node", "--dns-result-order=ipv4first", "index.js"]
