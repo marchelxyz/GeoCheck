@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { acquirePhotoPreviewSlot } from '../utils/photoPreviewLimiter';
 
 export default function CheckInDashboard({ checkIns: initialCheckIns }) {
   const [checkIns, setCheckIns] = useState(initialCheckIns || []);
@@ -54,19 +55,6 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
     if (distance === null || distance === undefined) return 'N/A';
     if (distance < 1000) return `${Math.round(distance)}м`;
     return `${(distance / 1000).toFixed(2)}км`;
-  };
-
-  const getPhotoUrl = async (requestId) => {
-    try {
-      const initData = window.Telegram?.WebApp?.initData || '';
-      const response = await axios.get(`/api/check-ins/${requestId}/photo`, {
-        headers: { 'x-telegram-init-data': initData }
-      });
-      return response.data.url || response.data.fileId || null;
-    } catch (error) {
-      console.error('Error getting photo URL:', error);
-      return null;
-    }
   };
 
   const successfulCount = checkIns.filter(c => c.result?.isWithinZone === true).length;
@@ -321,66 +309,123 @@ export default function CheckInDashboard({ checkIns: initialCheckIns }) {
 }
 
 function PhotoDisplay({ requestId }) {
+  const containerRef = useRef(null);
   const [photoUrl, setPhotoUrl] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [inView, setInView] = useState(false);
+  const [noMiniAppAuth, setNoMiniAppAuth] = useState(false);
   const [open, setOpen] = useState(false);
+  const releaseSlotRef = useRef(null);
 
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) {
+      return () => {};
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry?.isIntersecting) {
+          setInView(true);
+        }
+      },
+      { rootMargin: '240px', threshold: 0.01 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [requestId]);
+
+  useEffect(() => {
+    if (!inView) {
+      return () => {};
+    }
     const initData = window.Telegram?.WebApp?.initData || '';
     if (!initData) {
-      setLoading(false);
-      setPhotoUrl(null);
+      setNoMiniAppAuth(true);
       return () => {};
     }
 
     const url = `/api/check-ins/${requestId}/photo/file?initData=${encodeURIComponent(initData)}`;
-    setPhotoUrl(url);
-    setLoading(false);
-    return () => {};
-  }, [requestId]);
+    let cancelled = false;
 
-  if (loading) {
-    return <div className="text-sm text-gray-500">Загрузка фото...</div>;
-  }
+    (async () => {
+      const release = await acquirePhotoPreviewSlot();
+      if (cancelled) {
+        release();
+        return;
+      }
+      releaseSlotRef.current = release;
+      setPhotoUrl(url);
+    })();
 
-  if (!photoUrl) {
-    return null;
+    return () => {
+      cancelled = true;
+      if (releaseSlotRef.current) {
+        releaseSlotRef.current();
+        releaseSlotRef.current = null;
+      }
+    };
+  }, [inView, requestId]);
+
+  function releaseAfterImage() {
+    if (releaseSlotRef.current) {
+      releaseSlotRef.current();
+      releaseSlotRef.current = null;
+    }
   }
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-block"
-      >
-        <img
-          src={photoUrl}
-          alt="Check-in photo"
-          className="h-20 w-20 object-cover rounded border border-gray-300"
-          onError={(e) => {
-            e.target.style.display = 'none';
-          }}
+    <div ref={containerRef} className="mt-3 min-h-[5rem]">
+      {!inView && (
+        <div
+          className="h-20 w-20 rounded border border-gray-200 bg-gray-100"
+          aria-hidden
         />
-      </button>
-      {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 p-4">
-          <div className="relative max-w-3xl w-full">
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="absolute -top-10 right-0 text-white text-sm"
-            >
-              Закрыть ✕
-            </button>
+      )}
+      {inView && !noMiniAppAuth && !photoUrl && (
+        <div className="text-sm text-gray-500">Загрузка фото...</div>
+      )}
+      {photoUrl && (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="inline-block"
+          >
             <img
               src={photoUrl}
-              alt="Check-in photo large"
-              className="max-h-[80vh] w-full object-contain rounded"
+              alt="Check-in photo"
+              className="h-20 w-20 object-cover rounded border border-gray-300"
+              loading="lazy"
+              decoding="async"
+              onLoad={releaseAfterImage}
+              onError={(e) => {
+                releaseAfterImage();
+                e.target.style.display = 'none';
+              }}
             />
-          </div>
-        </div>
+          </button>
+          {open && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 p-4">
+              <div className="relative max-w-3xl w-full">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="absolute -top-10 right-0 text-white text-sm"
+                >
+                  Закрыть ✕
+                </button>
+                <img
+                  src={photoUrl}
+                  alt="Check-in photo large"
+                  className="max-h-[80vh] w-full object-contain rounded"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </div>
+            </div>
+          )}
+        </>
       )}
-    </>
+    </div>
   );
 }

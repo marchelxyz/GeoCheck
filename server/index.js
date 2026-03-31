@@ -47,6 +47,43 @@ function log(level, category, message, data = {}) {
   }
 }
 
+/**
+ * Сериализует Error и цепочку `cause` для логов (undici/fetch: таймаут, TLS, DNS).
+ *
+ * @param {unknown} err
+ * @param {number} depth
+ * @returns {Record<string, unknown>}
+ */
+function serializeErrorChain(err, depth = 0) {
+  if (depth > 4) {
+    return { note: 'max depth' };
+  }
+  if (err == null) {
+    return {};
+  }
+  if (typeof err === 'string') {
+    return { message: err };
+  }
+  if (typeof err !== 'object') {
+    return { value: String(err) };
+  }
+  const o = err;
+  const message = 'message' in o && typeof o.message === 'string' ? o.message : undefined;
+  const name = 'name' in o && typeof o.name === 'string' ? o.name : undefined;
+  const out = {
+    message,
+    name,
+    code: 'code' in o ? o.code : undefined,
+    errno: 'errno' in o ? o.errno : undefined,
+    syscall: 'syscall' in o ? o.syscall : undefined,
+    hostname: 'hostname' in o ? o.hostname : undefined
+  };
+  if ('cause' in o && o.cause !== undefined) {
+    out.cause = serializeErrorChain(o.cause, depth + 1);
+  }
+  return out;
+}
+
 function parseDeviceInfo(userAgent, platformHint) {
   const ua = (userAgent || '').toLowerCase();
   const platform = (platformHint || '').replace(/"/g, '');
@@ -2593,7 +2630,8 @@ app.get('/api/check-ins/:id/photo/file', verifyTelegramWebApp, async (req, res) 
       log('ERROR', 'CHECKIN', 'Failed to fetch photo from storage', {
         requestId: req.requestId,
         checkInRequestId: requestId,
-        status: photoResponse.status
+        status: photoResponse.status,
+        statusText: photoResponse.statusText
       });
       return res.status(502).json({ error: 'Failed to fetch photo from storage' });
     }
@@ -2616,6 +2654,7 @@ app.get('/api/check-ins/:id/photo/file', verifyTelegramWebApp, async (req, res) 
       checkInRequestId: req.params.id,
       telegramId: req.telegramUser?.id,
       error: error.message,
+      errorChain: serializeErrorChain(error),
       stack: error.stack
     });
     res.status(500).json({ error: error.message });
