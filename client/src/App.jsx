@@ -4,7 +4,7 @@ import DirectorView from './components/DirectorView';
 import EmployeeView from './components/EmployeeView';
 import CheckInInterface from './components/CheckInInterface';
 import Loading from './components/Loading';
-import { waitForTelegramInitData } from './telegramWebAppInit';
+import { waitForTelegramInitData, waitForTelegramWebApp } from './telegramWebAppInit';
 
 axios.defaults.timeout = 15000;
 
@@ -176,20 +176,19 @@ function App() {
     setLoading(true);
     setError(null);
 
-    if (!window.Telegram) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    if (!window.Telegram?.WebApp) {
-      console.error('Telegram WebApp not available');
+    const hasWebApp = await waitForTelegramWebApp(10000);
+    if (!hasWebApp) {
+      console.error('Telegram WebApp not available after wait');
       setError(
-        'Откройте приложение через Telegram-бота. В обычном браузере панель недоступна.'
+        'Откройте приложение через Telegram-бота. В обычном браузере панель недоступна. ' +
+          'Если нажимаете кнопку в Telegram, проверьте: Настройки Telegram → Дополнительно → ' +
+          'открытие ссылок во встроенном браузере (не «внешний браузер»).'
       );
       setLoading(false);
       return;
     }
 
-    await waitForTelegramInitData(5000);
+    await waitForTelegramInitData(8000);
 
     const initData = getTelegramInitData();
 
