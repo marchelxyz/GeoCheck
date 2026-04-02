@@ -12,6 +12,10 @@ import {
 
 axios.defaults.timeout = 15000;
 
+const INIT_REQUEST_TIMEOUT = 25000;
+const INIT_RETRIES = 3;
+const INIT_BASE_DELAY = 2000;
+
 const isDesktopPlatform = () => {
   const platform = window.Telegram?.WebApp?.platform;
   const desktopPlatforms = ['windows', 'macos', 'linux', 'tdesktop', 'web', 'weba', 'webk'];
@@ -43,11 +47,55 @@ async function withRetry(fn, { retries = 2, delayMs = 1000 } = {}) {
   throw lastError;
 }
 
+/**
+ * Проверяет связность с сервером через /api/health (без авторизации).
+ *
+ * @returns {Promise<{reachable: boolean, latencyMs: number | null}>}
+ */
+async function checkServerHealth() {
+  const start = Date.now();
+  try {
+    await axios.get('/api/health', { timeout: 10000 });
+    return { reachable: true, latencyMs: Date.now() - start };
+  } catch {
+    return { reachable: false, latencyMs: null };
+  }
+}
+
+/**
+ * Собирает клиентскую диагностику и тихо отправляет на сервер.
+ * Не бросает ошибок — чисто best-effort.
+ */
+function sendDiagnostic(stage, details) {
+  try {
+    axios.post('/api/client-diagnostic', { stage, details }, { timeout: 5000 }).catch(() => {});
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Собирает снимок окружения для диагностики.
+ */
+function collectEnvSnapshot() {
+  return {
+    userAgent: navigator.userAgent,
+    platform: window.Telegram?.WebApp?.platform ?? null,
+    hasTelegram: !!window.Telegram,
+    hasWebApp: !!window.Telegram?.WebApp,
+    initDataLength: window.Telegram?.WebApp?.initData?.length ?? 0,
+    locationHash: window.location.hash?.length ?? 0,
+    locationSearch: window.location.search?.length ?? 0,
+    online: navigator.onLine
+  };
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [diagnosticInfo, setDiagnosticInfo] = useState(null);
   const [requestId, setRequestId] = useState(null);
   const [pendingCheckDone, setPendingCheckDone] = useState(false);
 
@@ -161,10 +209,17 @@ function App() {
   const initTelegramWebApp = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setDiagnosticInfo(null);
+
+    const envSnap = collectEnvSnapshot();
 
     const hasWebApp = await waitForTelegramWebApp(10000);
     if (!hasWebApp) {
       console.error('Telegram WebApp not available after wait');
+      const health = await checkServerHealth();
+      const diag = { ...envSnap, serverReachable: health.reachable, latencyMs: health.latencyMs, stage: 'webapp_missing' };
+      setDiagnosticInfo(diag);
+      sendDiagnostic('webapp_missing', diag);
       setError(
         'Откройте приложение через Telegram-бота. В обычном браузере панель недоступна. ' +
           'Если нажимаете кнопку в Telegram, проверьте: Настройки Telegram → Дополнительно → ' +
@@ -180,27 +235,53 @@ function App() {
 
     if (!initData) {
       console.error('Telegram initData is not available');
+      const health = await checkServerHealth();
+      const diag = { ...collectEnvSnapshot(), serverReachable: health.reachable, latencyMs: health.latencyMs, stage: 'initdata_empty' };
+      setDiagnosticInfo(diag);
+      sendDiagnostic('initdata_empty', diag);
       setError('Не удалось получить данные Telegram. Пожалуйста, откройте приложение через Telegram бота.');
       setLoading(false);
       return;
     }
 
     try {
-      const userResponse = await withRetry(() =>
-        axios.post('/api/user', {}, {
-          headers: { 'x-telegram-init-data': initData }
-        })
+      const userResponse = await withRetry(
+        () => axios.post('/api/user', {}, {
+          headers: { 'x-telegram-init-data': initData },
+          timeout: INIT_REQUEST_TIMEOUT
+        }),
+        { retries: INIT_RETRIES, delayMs: INIT_BASE_DELAY }
       );
 
       setUser(userResponse.data);
       setRole(userResponse.data.role);
-    } catch (error) {
-      if (error.response?.status === 404) {
+    } catch (err) {
+      if (err.response?.status === 404) {
         setUser(null);
         setRole(null);
       } else {
-        console.error('Error initializing user:', error);
-        setError(error.response?.data?.error || 'Ошибка соединения. Проверьте интернет-подключение и попробуйте снова.');
+        console.error('Error initializing user:', err);
+        const health = await checkServerHealth();
+        const diag = {
+          ...collectEnvSnapshot(),
+          serverReachable: health.reachable,
+          latencyMs: health.latencyMs,
+          stage: 'api_user_failed',
+          errorCode: err.code,
+          httpStatus: err.response?.status ?? null,
+          errorMessage: err.message
+        };
+        setDiagnosticInfo(diag);
+        sendDiagnostic('api_user_failed', diag);
+
+        if (!health.reachable) {
+          setError(
+            'Сервер недоступен. Если вы используете прокси/VPN, попробуйте ' +
+            'переключить его или временно отключить, затем нажмите «Попробовать снова».'
+          );
+        } else {
+          setError(err.response?.data?.error || 'Ошибка соединения. Проверьте интернет-подключение и попробуйте снова.');
+        }
       }
     } finally {
       setLoading(false);
@@ -244,8 +325,18 @@ function App() {
     }
   };
 
-  // Если есть requestId в URL, показываем интерфейс проверки
-  // Не ждем загрузки пользователя, так как CheckInInterface может работать независимо
+  const renderDiagnosticPanel = () => {
+    if (!diagnosticInfo) return null;
+    return (
+      <details className="mt-3 text-left">
+        <summary className="text-xs text-gray-400 cursor-pointer">Техническая информация</summary>
+        <pre className="mt-1 p-2 bg-gray-100 rounded text-xs text-gray-500 overflow-auto max-h-32 whitespace-pre-wrap break-all">
+          {JSON.stringify(diagnosticInfo, null, 2)}
+        </pre>
+      </details>
+    );
+  };
+
   if (requestId && isDesktopPlatform()) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -285,6 +376,7 @@ function App() {
             >
               Попробовать снова
             </button>
+            {renderDiagnosticPanel()}
           </div>
         </div>
       );
@@ -324,6 +416,7 @@ function App() {
           >
             Попробовать снова
           </button>
+          {renderDiagnosticPanel()}
         </div>
       </div>
     );

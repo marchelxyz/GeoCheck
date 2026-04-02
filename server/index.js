@@ -884,6 +884,25 @@ function generateRandomScheduleTimes(baseDate, count, startMinutes, endMinutes) 
 
 // API Routes
 
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+/**
+ * Принимает клиентскую диагностику без авторизации,
+ * чтобы зафиксировать проблемы инициализации у пользователей с прокси/VPN.
+ */
+app.post('/api/client-diagnostic', (req, res) => {
+  const { stage, details } = req.body || {};
+  log('WARN', 'CLIENT_DIAG', 'Client diagnostic report', {
+    stage,
+    details,
+    ip: req.ip,
+    userAgent: req.get('user-agent')?.substring(0, 200)
+  });
+  res.json({ ok: true });
+});
+
 // Register employee (only through web app)
 app.post('/api/user/register', verifyTelegramWebApp, async (req, res) => {
   try {
