@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import CameraView from './CameraView';
 import { getTelegramInitDataString, waitForTelegramInitData } from '../telegramWebAppInit.js';
+import { hasAnyAuth } from '../authFallback.js';
 
 export default function CheckInInterface({ requestId, user, onComplete }) {
   const [locationSent, setLocationSent] = useState(false);
@@ -56,7 +57,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
 
     try {
       const initData = await waitForTelegramInitData(4000);
-      if (!initData) {
+      if (!initData && !hasAnyAuth()) {
         setPhotoError(
           'Не удалось получить данные Telegram. Пожалуйста, откройте приложение через Telegram бота.'
         );
@@ -68,14 +69,16 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
         formData.append('requestId', requestId);
       }
 
+      const photoHeaders = { 'Content-Type': 'multipart/form-data' };
+      if (initData) {
+        photoHeaders['x-telegram-init-data'] = initData;
+      }
+
       await axios.post(
         '/api/check-in/photo',
         formData,
         {
-          headers: {
-            'x-telegram-init-data': initData,
-            'Content-Type': 'multipart/form-data'
-          },
+          headers: photoHeaders,
           timeout: 60000
         }
       );
@@ -130,7 +133,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
 
     try {
       const initDataForAuth = await waitForTelegramInitData(4000);
-      if (!initDataForAuth) {
+      if (!initDataForAuth && !hasAnyAuth()) {
         setLocationError(
           'Не удалось получить данные Telegram. Закройте мини-приложение и откройте проверку снова из кнопки в боте.'
         );
@@ -222,6 +225,11 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
 
       setGeoStatus('success');
 
+      const locationHeaders = {};
+      if (initDataForAuth) {
+        locationHeaders['x-telegram-init-data'] = initDataForAuth;
+      }
+
       const response = await axios.post(
         '/api/check-in/location',
         {
@@ -230,7 +238,7 @@ export default function CheckInInterface({ requestId, user, onComplete }) {
           accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
         },
         {
-          headers: { 'x-telegram-init-data': initDataForAuth },
+          headers: locationHeaders,
           timeout: 15000
         }
       );
@@ -460,7 +468,8 @@ async function reportClientEvent({ eventType, eventData, requestId }) {
   if (!eventType) {
     return;
   }
-  if (!getTelegramInitData()) {
+  const initData = getTelegramInitData();
+  if (!initData && !hasAnyAuth()) {
     return;
   }
   try {
@@ -471,10 +480,12 @@ async function reportClientEvent({ eventType, eventData, requestId }) {
         checkInRequestId: requestId || undefined
       }
     };
+    const eventHeaders = {};
+    if (initData) {
+      eventHeaders['x-telegram-init-data'] = initData;
+    }
     await axios.post('/api/check-in/client-event', payload, {
-      headers: {
-        'x-telegram-init-data': getTelegramInitData()
-      },
+      headers: eventHeaders,
       timeout: 5000
     });
   } catch (error) {
