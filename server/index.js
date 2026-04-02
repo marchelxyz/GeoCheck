@@ -551,69 +551,6 @@ function parseInitData(initData) {
   return JSON.parse(userStr);
 }
 
-const AUTH_TOKEN_TTL_MS = 30 * 60 * 1000;
-
-/**
- * Генерирует подписанный HMAC-SHA256 токен для прямой авторизации
- * (fallback, когда Telegram SDK не загрузился из-за прокси/VPN).
- *
- * @param {string} telegramId
- * @param {string} requestId - ID чекин-запроса, к которому привязан токен
- * @returns {string} `payload.signature` (оба base64url)
- */
-function generateAuthToken(telegramId, requestId) {
-  const payload = Buffer.from(JSON.stringify({
-    tid: String(telegramId),
-    rid: requestId,
-    exp: Date.now() + AUTH_TOKEN_TTL_MS
-  })).toString('base64url');
-
-  const signature = crypto
-    .createHmac('sha256', BOT_TOKEN)
-    .update(payload)
-    .digest('base64url');
-
-  return `${payload}.${signature}`;
-}
-
-/**
- * Проверяет authToken: подпись, срок годности.
- *
- * @param {string} token
- * @returns {{telegramId: string, requestId: string} | null}
- */
-function verifyAuthToken(token) {
-  try {
-    if (typeof token !== 'string') return null;
-    const dotIdx = token.indexOf('.');
-    if (dotIdx === -1) return null;
-
-    const payload = token.slice(0, dotIdx);
-    const signature = token.slice(dotIdx + 1);
-    if (!payload || !signature) return null;
-
-    const expectedSig = crypto
-      .createHmac('sha256', BOT_TOKEN)
-      .update(payload)
-      .digest('base64url');
-
-    const sigBuf = Buffer.from(signature);
-    const expectedBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-      return null;
-    }
-
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    if (!data.tid || !data.rid || data.exp < Date.now()) {
-      return null;
-    }
-
-    return { telegramId: data.tid, requestId: data.rid };
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Reads initData without using || (empty string "" is falsy and would be wrongly skipped).
  */
@@ -639,69 +576,51 @@ function _getTelegramInitDataRaw(req) {
   return undefined;
 }
 
-/**
- * Middleware аутентификации.
- * Приоритет: initData (Telegram SDK) → authToken (подписанный fallback).
- */
+// Middleware to verify Telegram Web App
 function verifyTelegramWebApp(req, res, next) {
   const initDataRaw = _getTelegramInitDataRaw(req);
-  const hasInitData =
-    initDataRaw != null &&
-    typeof initDataRaw === 'string' &&
-    initDataRaw.trim().length > 0;
+  const isEmptyString =
+    initDataRaw == null ||
+    (typeof initDataRaw === 'string' && initDataRaw.trim() === '');
+  const initData =
+    typeof initDataRaw === 'string' ? initDataRaw : String(initDataRaw);
 
-  if (hasInitData) {
-    if (!verifyTelegramWebAppData(initDataRaw)) {
-      log('WARN', 'AUTH', 'Invalid Telegram init data', {
-        requestId: req.requestId,
-        initDataLength: initDataRaw.length
-      });
-      return res.status(401).json({
-        error: 'Invalid Telegram init data. Пожалуйста, перезагрузите страницу.'
-      });
-    }
-
-    const user = parseInitData(initDataRaw);
-    if (!user) {
-      log('WARN', 'AUTH', 'Failed to parse user data from initData', { requestId: req.requestId });
-      return res.status(401).json({
-        error: 'Invalid user data. Пожалуйста, перезагрузите страницу.'
-      });
-    }
-
-    req.telegramUser = user;
-    log('INFO', 'AUTH', 'Telegram user authenticated', {
+  if (isEmptyString) {
+    log('WARN', 'AUTH', 'Missing or empty Telegram init data', {
       requestId: req.requestId,
-      userId: user.id,
-      username: user.username
+      headerPresent: req.headers['x-telegram-init-data'] !== undefined,
+      availableHeaders: Object.keys(req.headers).filter((h) => h.toLowerCase().includes('telegram'))
     });
-    return next();
+    return res.status(401).json({ 
+      error: 'Missing Telegram init data. Пожалуйста, откройте приложение через Telegram бота.' 
+    });
   }
 
-  const authToken = req.headers['x-auth-token'];
-  if (authToken) {
-    const tokenData = verifyAuthToken(authToken);
-    if (tokenData) {
-      req.telegramUser = { id: tokenData.telegramId };
-      req.authTokenData = tokenData;
-      log('INFO', 'AUTH', 'User authenticated via authToken', {
-        requestId: req.requestId,
-        telegramId: tokenData.telegramId,
-        tokenRequestId: tokenData.requestId
-      });
-      return next();
-    }
-    log('WARN', 'AUTH', 'Invalid authToken', { requestId: req.requestId });
+  if (!verifyTelegramWebAppData(initData)) {
+    log('WARN', 'AUTH', 'Invalid Telegram init data', {
+      requestId: req.requestId,
+      initDataLength: initData.length
+    });
+    return res.status(401).json({ 
+      error: 'Invalid Telegram init data. Пожалуйста, перезагрузите страницу.' 
+    });
   }
 
-  log('WARN', 'AUTH', 'No valid auth credentials', {
+  const user = parseInitData(initData);
+  if (!user) {
+    log('WARN', 'AUTH', 'Failed to parse user data from initData', { requestId: req.requestId });
+    return res.status(401).json({ 
+      error: 'Invalid user data. Пожалуйста, перезагрузите страницу.' 
+    });
+  }
+
+  req.telegramUser = user;
+  log('INFO', 'AUTH', 'Telegram user authenticated', {
     requestId: req.requestId,
-    headerPresent: req.headers['x-telegram-init-data'] !== undefined,
-    authTokenPresent: !!authToken
+    userId: user.id,
+    username: user.username
   });
-  return res.status(401).json({
-    error: 'Missing Telegram init data. Пожалуйста, откройте приложение через Telegram бота.'
-  });
+  next();
 }
 
 /**
@@ -2979,8 +2898,7 @@ app.post('/api/check-ins/request', verifyTelegramWebApp, async (req, res) => {
       checkInRequestId: checkInRequest.id
     });
 
-    const authToken = generateAuthToken(employee.telegramId, checkInRequest.id);
-    const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}&authToken=${authToken}`;
+    const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
     try {
       const employeeLabel = employee.displayName || employee.name;
       const sentMessage = await bot.telegram.sendMessage(
@@ -3539,8 +3457,7 @@ cron.schedule('* * * * *', async () => {
         }
       });
 
-      const cronAuthToken = generateAuthToken(employee.telegramId, checkInRequest.id);
-      const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}&authToken=${cronAuthToken}`;
+      const checkInUrl = `${WEB_APP_URL}/check-in?requestId=${checkInRequest.id}`;
       try {
         const sentMessage = await bot.telegram.sendMessage(
           employee.telegramId,

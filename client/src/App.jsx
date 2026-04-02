@@ -9,7 +9,6 @@ import {
   waitForTelegramInitData,
   waitForTelegramWebApp
 } from './telegramWebAppInit.js';
-import { getAuthToken } from './authFallback.js';
 
 axios.defaults.timeout = 15000;
 
@@ -213,11 +212,10 @@ function App() {
     setDiagnosticInfo(null);
 
     const envSnap = collectEnvSnapshot();
-    const authToken = getAuthToken();
 
     const hasWebApp = await waitForTelegramWebApp(10000);
-    if (!hasWebApp && !authToken) {
-      console.error('Telegram WebApp not available after wait, no authToken');
+    if (!hasWebApp) {
+      console.error('Telegram WebApp not available after wait');
       const health = await checkServerHealth();
       const diag = { ...envSnap, serverReachable: health.reachable, latencyMs: health.latencyMs, stage: 'webapp_missing' };
       setDiagnosticInfo(diag);
@@ -231,14 +229,12 @@ function App() {
       return;
     }
 
-    if (hasWebApp) {
-      await waitForTelegramInitData(8000);
-    }
+    await waitForTelegramInitData(8000);
 
     const initData = getTelegramInitData();
 
-    if (!initData && !authToken) {
-      console.error('Telegram initData is not available, no authToken');
+    if (!initData) {
+      console.error('Telegram initData is not available');
       const health = await checkServerHealth();
       const diag = { ...collectEnvSnapshot(), serverReachable: health.reachable, latencyMs: health.latencyMs, stage: 'initdata_empty' };
       setDiagnosticInfo(diag);
@@ -249,14 +245,9 @@ function App() {
     }
 
     try {
-      const headers = {};
-      if (initData) {
-        headers['x-telegram-init-data'] = initData;
-      }
-
       const userResponse = await withRetry(
         () => axios.post('/api/user', {}, {
-          headers,
+          headers: { 'x-telegram-init-data': initData },
           timeout: INIT_REQUEST_TIMEOUT
         }),
         { retries: INIT_RETRIES, delayMs: INIT_BASE_DELAY }
@@ -278,8 +269,7 @@ function App() {
           stage: 'api_user_failed',
           errorCode: err.code,
           httpStatus: err.response?.status ?? null,
-          errorMessage: err.message,
-          hasAuthToken: !!authToken
+          errorMessage: err.message
         };
         setDiagnosticInfo(diag);
         sendDiagnostic('api_user_failed', diag);
