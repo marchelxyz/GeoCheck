@@ -1607,6 +1607,7 @@ app.delete('/api/employees/:id', verifyTelegramWebApp, async (req, res) => {
         where: { requestId: { in: requests.map((item) => item.id) } }
       }),
       prisma.checkInRequest.deleteMany({ where: { userId: employeeId } }),
+      prisma.checkInSchedule.deleteMany({ where: { userId: employeeId } }),
       prisma.zoneEmployee.deleteMany({ where: { userId: employeeId } }),
       prisma.zoneEmployee.deleteMany({ where: { zoneId: { in: singleZoneIds } } }),
       prisma.zone.deleteMany({ where: { id: { in: singleZoneIds } } }),
